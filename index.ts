@@ -23,6 +23,7 @@ import {
 import {
 	type FiefConfig,
 	type FiefdomConfig,
+	findFiefdomConfigPath,
 	loadFiefdomConfig,
 	pathMatchesFief,
 } from "./config.ts";
@@ -63,13 +64,16 @@ export default function fiefdom(pi: ExtensionAPI) {
 	// --------------------------------------------------------------------------
 
 	pi.on("session_start", async (_event, ctx) => {
-		const configPath = path.join(ctx.cwd, CONFIG_DIR_NAME, "fiefs.json");
+		// Find config - checks local .pi/fiefs.json first, then main worktree if applicable
+		const configPath = findFiefdomConfigPath(ctx.cwd);
 
 		// Check if this is a git repo (required for fiefdom)
-		const isGitRepo = fs.existsSync(path.join(ctx.cwd, ".git"));
+		// Note: worktrees have a .git file (not directory) pointing to the main repo
+		const gitPath = path.join(ctx.cwd, ".git");
+		const isGitRepo = fs.existsSync(gitPath);
 
 		// Load configuration
-		const config = loadFiefdomConfig(configPath);
+		const config = configPath ? loadFiefdomConfig(configPath) : null;
 		if (!config) {
 			// No fiefs.json - notify user about setup option
 			if (isGitRepo && ctx.hasUI) {
@@ -99,8 +103,10 @@ export default function fiefdom(pi: ExtensionAPI) {
 		}
 
 		// Initialize memory for each fief
+		// Resolve paths relative to config root (supports worktrees inheriting from main repo)
+		const configRoot = config._configRoot ?? ctx.cwd;
 		for (const fief of config.fiefs) {
-			const memoryDir = path.join(ctx.cwd, fief.memory);
+			const memoryDir = path.join(configRoot, fief.memory);
 			state.memory.set(fief.id, new FiefMemory(memoryDir));
 		}
 
@@ -209,7 +215,11 @@ export default function fiefdom(pi: ExtensionAPI) {
 				};
 			});
 
-			const text = fiefs
+			const configSource = state.config._loadedFrom
+				? `Config: ${state.config._loadedFrom}`
+				: "";
+
+			const text = (configSource ? configSource + "\n\n" : "") + fiefs
 				.map(
 					(f) =>
 						`**${f.id}**: ${f.status} (${f.messageCount} messages, ${f.memoryEntries} memory entries)\n  Paths: ${f.paths.join(", ")}`
@@ -837,7 +847,9 @@ async function spawnFiefAgent(
 	}
 
 	// Load persona (system prompt)
-	const personaPath = path.join(ctx.cwd, fief.persona);
+	// Resolve relative to config root (supports worktrees inheriting from main repo)
+	const configRoot = state.config?._configRoot ?? ctx.cwd;
+	const personaPath = path.join(configRoot, fief.persona);
 	let persona = "";
 	try {
 		persona = fs.readFileSync(personaPath, "utf-8");

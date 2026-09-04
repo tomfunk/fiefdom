@@ -2,7 +2,9 @@
  * Fiefdom configuration loading and path matching
  */
 
+import { execSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { minimatch } from "minimatch";
 
 export interface FiefConfig {
@@ -15,6 +17,71 @@ export interface FiefConfig {
 export interface FiefdomConfig {
 	fiefs: FiefConfig[];
 	useWorktrees?: boolean;  // Default: false
+	_loadedFrom?: string;    // Path where config was loaded from (for diagnostics)
+	_configRoot?: string;    // Root directory for resolving relative paths (persona, memory)
+}
+
+/**
+ * Detect if we're in a git worktree and return the main repo path.
+ * Returns null if not in a worktree or not a git repo.
+ */
+export function getMainWorktreePath(cwd: string): string | null {
+	try {
+		// git rev-parse --git-common-dir returns the shared .git directory
+		// For worktrees, this is the main repo's .git dir
+		// For the main repo itself, it returns .git (relative)
+		const gitCommonDir = execSync("git rev-parse --git-common-dir", {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		}).trim();
+
+		// If it's just ".git", we're in the main repo
+		if (gitCommonDir === ".git") {
+			return null;
+		}
+
+		// gitCommonDir is an absolute path to the main repo's .git directory
+		// The main repo is its parent
+		const mainRepoPath = path.dirname(gitCommonDir);
+
+		// Verify it's different from cwd
+		const resolvedCwd = path.resolve(cwd);
+		const resolvedMain = path.resolve(mainRepoPath);
+
+		if (resolvedCwd === resolvedMain) {
+			return null;
+		}
+
+		return resolvedMain;
+	} catch {
+		// Not a git repo or git not available
+		return null;
+	}
+}
+
+/**
+ * Find the fiefs.json config path, checking worktree parent if needed.
+ * Returns the path to use, or null if not found.
+ */
+export function findFiefdomConfigPath(cwd: string): string | null {
+	const localPath = path.join(cwd, ".pi", "fiefs.json");
+
+	// First check local .pi/fiefs.json
+	if (fs.existsSync(localPath)) {
+		return localPath;
+	}
+
+	// If we're in a worktree, check the main repo
+	const mainRepoPath = getMainWorktreePath(cwd);
+	if (mainRepoPath) {
+		const mainConfigPath = path.join(mainRepoPath, ".pi", "fiefs.json");
+		if (fs.existsSync(mainConfigPath)) {
+			return mainConfigPath;
+		}
+	}
+
+	return null;
 }
 
 /**
@@ -56,7 +123,11 @@ export function loadFiefdomConfig(configPath: string): FiefdomConfig | null {
 			return null;
 		}
 
-		return { fiefs };
+		return {
+			fiefs,
+			_loadedFrom: configPath,
+			_configRoot: path.dirname(path.dirname(configPath)), // Parent of .pi directory
+		};
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 			// No config file - fiefdom inactive
