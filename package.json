@@ -1,0 +1,11 @@
+{
+  "name": "fiefdom",
+  "version": "0.1.0",
+  "description": "Multi-agent workspace orchestration for Pi",
+  "dependencies": {
+    "minimatch": "^9.0.0"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
