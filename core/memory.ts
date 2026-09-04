@@ -22,9 +22,11 @@ export interface MemoryEntry {
 	metadata?: Record<string, unknown>;
 }
 
-const VALID_CATEGORIES = ["decisions", "conventions", "issues", "notes"];
+export const VALID_CATEGORIES = ["decisions", "conventions", "issues", "notes"];
 const MAX_ENTRIES_PER_CATEGORY = 50; // Keep it lean
 const MAX_CONTENT_LENGTH = 500; // Truncate long entries
+
+export const NO_LEARNINGS = "(No prior learnings)";
 
 /**
  * Manages persistent memory for a single fief
@@ -129,6 +131,34 @@ export class FiefMemory {
 	}
 
 	/**
+	 * Add a batch of learnings keyed by category, e.g.
+	 * `{ conventions: ["..."], issues: ["..."] }`. Returns how many were kept
+	 * after dedupe/validation.
+	 */
+	addLearnings(
+		learnings: Record<string, unknown>,
+		source: MemoryEntry["source"] = "agent"
+	): number {
+		const before = this.getEntryCount();
+		const timestamp = new Date().toISOString();
+
+		for (const [category, items] of Object.entries(learnings)) {
+			const list = Array.isArray(items) ? items : [items];
+			for (const content of list) {
+				if (typeof content !== "string" || !content.trim()) continue;
+				this.addEntry({
+					category,
+					content: content.trim(),
+					timestamp,
+					source,
+				});
+			}
+		}
+
+		return this.getEntryCount() - before;
+	}
+
+	/**
 	 * Get entries, optionally filtered by category
 	 */
 	getEntries(category?: string): MemoryEntry[] {
@@ -194,9 +224,7 @@ export class FiefMemory {
 			totalIncluded += toTake;
 		}
 
-		return sections.length > 0
-			? sections.join("\n\n")
-			: "(No prior learnings)";
+		return sections.length > 0 ? sections.join("\n\n") : NO_LEARNINGS;
 	}
 
 	/**
@@ -266,7 +294,7 @@ export function aggregateFiefMemories(
 
 	for (const [fiefId, memory] of memories) {
 		const summary = memory.getContextSummary();
-		if (summary !== "(No memory entries)") {
+		if (summary !== NO_LEARNINGS) {
 			sections.push(`## ${fiefId} Fief Memory\n\n${summary}`);
 		}
 	}

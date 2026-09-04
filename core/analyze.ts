@@ -8,6 +8,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { FiefConfig } from "./config.ts";
+import { FIEFDOM_DIR, defaultMemoryPath, defaultPersonaPath } from "./paths.ts";
+import { gitIgnoredNames } from "./gitignore.ts";
 
 export interface AnalysisResult {
 	proposedFiefs: ProposedFief[];
@@ -187,6 +189,15 @@ export async function analyzeRepository(repoRoot: string): Promise<AnalysisResul
 
 	// Scan repository structure
 	await scanDirectory(repoRoot, "", topLevelDirs, allPaths, stats);
+
+	// Drop anything the repository itself ignores: build output is not a fief.
+	const ignored = gitIgnoredNames(repoRoot, [...topLevelDirs.keys()]);
+	for (const name of ignored) {
+		const entry = topLevelDirs.get(name);
+		if (!entry) continue;
+		topLevelDirs.delete(name);
+		stats.totalFiles -= entry.files;
+	}
 
 	// Detect monorepo
 	const packagesDir = path.join(repoRoot, "packages");
@@ -628,24 +639,21 @@ function generateReasoning(
  * Generate config file content from analysis
  */
 export function generateConfigFromAnalysis(
-	analysis: AnalysisResult
-): { config: string; personas: Map<string, string> } {
-	const config = {
-		fiefs: analysis.proposedFiefs.map((fief) => ({
-			id: fief.id,
-			paths: fief.paths,
-			persona: `.pi/fiefs/${fief.id}/AGENT.md`,
-			memory: `.pi/fiefs/${fief.id}/memory/`,
-		})),
-	};
+	analysis: AnalysisResult,
+	stateDirName: string = FIEFDOM_DIR
+): { fiefs: FiefConfig[]; personas: Map<string, string> } {
+	const fiefs: FiefConfig[] = analysis.proposedFiefs.map((fief) => ({
+		id: fief.id,
+		paths: fief.paths,
+		persona: defaultPersonaPath(stateDirName, fief.id),
+		memory: defaultMemoryPath(stateDirName, fief.id),
+		description: fief.description,
+	}));
 
 	const personas = new Map<string, string>();
 	for (const fief of analysis.proposedFiefs) {
 		personas.set(fief.id, fief.suggestedPersona);
 	}
 
-	return {
-		config: JSON.stringify(config, null, 2),
-		personas,
-	};
+	return { fiefs, personas };
 }

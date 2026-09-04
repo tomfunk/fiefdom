@@ -7,14 +7,16 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import type { FiefMemory } from "./memory.ts";
 
 export interface FiefAgentOptions {
 	cwd: string;
-	allowedPaths: string[];
 	persona: string;
+	/**
+	 * Boundary and memory instructions shared with the Claude Code adapter
+	 * (core/persona.ts), so a fief behaves the same in either harness.
+	 */
+	instructions: string;
 	memoryContext: string;
-	memory?: FiefMemory;
 }
 
 export interface FiefAgentStatus {
@@ -79,6 +81,7 @@ export class FiefAgent {
 	private requestCounter = 0;
 	private buffer = "";
 	private eventListeners: Array<(event: RpcEvent) => void> = [];
+	private settleWaiters: Set<(error?: Error) => void> = new Set();
 
 	constructor(id: string, options: FiefAgentOptions) {
 		this.id = id;
@@ -108,7 +111,7 @@ export class FiefAgent {
 			stdio: ["pipe", "pipe", "pipe"],
 			// Marks this pi as a fief worker so its own fiefdom extension bails out
 			// instead of spawning another layer of agents (see index.ts recursion guard).
-			env: { ...process.env, PI_FIEFDOM_CHILD: "1" },
+			env: { ...process.env, PI_FIEFDOM_CHILD: "1", PI_FIEFDOM_FIEF: this.id },
 		});
 
 		// Handle stdout (JSONL responses and events)
@@ -127,12 +130,15 @@ export class FiefAgent {
 				state: "shutdown",
 				errorMessage: code !== 0 ? `Exited with code ${code}` : undefined,
 			};
-			this.rejectAllPending(new Error(`Process exited with code ${code}`));
+			const exitError = new Error(`Process exited with code ${code}`);
+			this.rejectAllPending(exitError);
+			this.rejectAllWaiters(exitError);
 		});
 
 		this.process.on("error", (err) => {
 			this.status = { state: "error", errorMessage: err.message };
 			this.rejectAllPending(err);
+			this.rejectAllWaiters(err);
 		});
 
 		// Wait for process to be ready (get initial state). Bounded: a child that never
@@ -216,9 +222,10 @@ export class FiefAgent {
 			this.messageCount++;
 			this.status = { state: "idle", messageCount: this.messageCount };
 
-			// Extract learnings from the work (runs in background, doesn't block)
-			this.reflectAndRemember(task, finalOutput).catch(() => {});
-
+			// Memory is written by the agent itself through the fiefdom CLI (see
+			// core/persona.ts). The reflection round-trip that used to run here
+			// added two messages to this worker's conversation after every task,
+			// so its context — and this process's memory — grew without bound.
 			return { success: true, output: finalOutput };
 		} catch (err) {
 			this.status = {
@@ -255,28 +262,53 @@ export class FiefAgent {
 			// Ignore
 		}
 
-		// Kill the process
-		this.process.kill("SIGTERM");
+		const child = this.process;
 
-		// Force kill after timeout
-		const timeout = setTimeout(() => {
-			if (this.process && !this.process.killed) {
-				this.process.kill("SIGKILL");
-			}
+		// Already gone: there is no "close" left to wait for. Awaiting one here
+		// used to hang forever, which stalled the sequential shutdown loop and
+		// orphaned every fief process after this one.
+		if (child.exitCode !== null || child.signalCode !== null) {
+			this.process = null;
+			return;
+		}
+
+		child.kill("SIGTERM");
+
+		const forceKill = setTimeout(() => {
+			if (!child.killed) child.kill("SIGKILL");
 		}, 5000);
 
+		// Bounded either way: a child that ignores both signals must not keep
+		// the session from exiting.
 		await new Promise<void>((resolve) => {
-			if (!this.process) {
+			const done = () => {
+				clearTimeout(forceKill);
+				clearTimeout(giveUp);
 				resolve();
-				return;
-			}
-			this.process.on("close", () => {
-				clearTimeout(timeout);
-				resolve();
-			});
+			};
+			const giveUp = setTimeout(done, 10000);
+			child.once("close", done);
+			child.once("error", done);
 		});
 
 		this.process = null;
+	}
+
+	/**
+	 * Best-effort synchronous kill, for process-exit handlers where there is no
+	 * time to await anything. (A child whose parent dies without running this
+	 * still sees its stdin close, which ends the RPC loop.)
+	 */
+	killNow(): void {
+		const child = this.process;
+		if (!child) return;
+		this.process = null;
+		this.status = { state: "shutdown" };
+		try {
+			child.kill("SIGKILL");
+		} catch {
+			// Already gone.
+		}
 	}
 
 	// --------------------------------------------------------------------------
@@ -293,21 +325,7 @@ export class FiefAgent {
 
 ${this.options.persona}
 
-## Important Constraints
-
-You are a specialized agent with LIMITED scope:
-
-1. **PATH RESTRICTIONS**: You may ONLY write to files matching these patterns:
-   ${this.options.allowedPaths.map((p) => `- ${p}`).join("\n   ")}
-
-2. **Cross-Fief Coordination**: If you need something outside your scope:
-   - Do NOT attempt to edit files outside your paths
-   - Clearly state what you need from other fiefs
-   - The orchestrator will coordinate with the appropriate fief
-
-3. **Memory**: Document important decisions, conventions, and learnings.
-   Use markers like "[MEMORY:decision]" or "[MEMORY:convention]" to flag
-   things worth remembering across sessions.
+${this.options.instructions}
 
 ## Current Memory/Context
 
@@ -408,12 +426,18 @@ ${this.options.memoryContext || "(No prior memory)"}
 		const commandWithId = { ...command, id };
 
 		return new Promise((resolve, reject) => {
+			const onAbort = () => {
+				this.pendingResponses.delete(id);
+				reject(new Error("Aborted"));
+			};
+
 			// Set up abort handling
 			if (signal) {
-				signal.addEventListener("abort", () => {
-					this.pendingResponses.delete(id);
-					reject(new Error("Aborted"));
-				});
+				if (signal.aborted) {
+					onAbort();
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
 			}
 
 			// Set up timeout
@@ -425,13 +449,17 @@ ${this.options.memoryContext || "(No prior memory)"}
 				}, timeoutMs);
 			}
 
+			// Each settle path also drops the abort listener; long-lived agents
+			// otherwise accumulate one per request on the caller's signal.
 			this.pendingResponses.set(id, {
 				resolve: (response) => {
 					if (timeoutHandle) clearTimeout(timeoutHandle);
+					signal?.removeEventListener("abort", onAbort);
 					resolve(response);
 				},
 				reject: (err) => {
 					if (timeoutHandle) clearTimeout(timeoutHandle);
+					signal?.removeEventListener("abort", onAbort);
 					reject(err);
 				},
 			});
@@ -442,24 +470,40 @@ ${this.options.memoryContext || "(No prior memory)"}
 
 	private async waitForSettled(signal?: AbortSignal): Promise<void> {
 		return new Promise((resolve, reject) => {
-			const handler = (event: RpcEvent) => {
-				if (event.type === "agent_settled") {
-					const idx = this.eventListeners.indexOf(handler);
-					if (idx >= 0) this.eventListeners.splice(idx, 1);
-					resolve();
-				}
+			const settle = (err?: Error) => {
+				const idx = this.eventListeners.indexOf(handler);
+				if (idx >= 0) this.eventListeners.splice(idx, 1);
+				this.settleWaiters.delete(settle);
+				signal?.removeEventListener("abort", onAbort);
+				if (err) reject(err);
+				else resolve();
 			};
 
+			const handler = (event: RpcEvent) => {
+				if (event.type === "agent_settled") settle();
+			};
+
+			const onAbort = () => settle(new Error("Aborted"));
+
 			if (signal) {
-				signal.addEventListener("abort", () => {
-					const idx = this.eventListeners.indexOf(handler);
-					if (idx >= 0) this.eventListeners.splice(idx, 1);
-					reject(new Error("Aborted"));
-				});
+				if (signal.aborted) {
+					onAbort();
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
 			}
 
+			// Registered so a dying child rejects this wait. Previously the close
+			// handler only rejected pending RPC calls, leaving settle waiters (and
+			// their listeners) pending for the life of the session.
+			this.settleWaiters.add(settle);
 			this.eventListeners.push(handler);
 		});
+	}
+
+	private rejectAllWaiters(error: Error): void {
+		for (const settle of [...this.settleWaiters]) settle(error);
+		this.settleWaiters.clear();
 	}
 
 	private rejectAllPending(error: Error): void {
@@ -467,130 +511,5 @@ ${this.options.memoryContext || "(No prior memory)"}
 			pending.reject(error);
 		}
 		this.pendingResponses.clear();
-	}
-
-	/**
-	 * After completing a task, reflect on what's worth remembering
-	 * This runs as a quick follow-up that extracts learnings
-	 */
-	private async reflectAndRemember(task: string, output: string): Promise<void> {
-		if (!this.options.memory) return;
-		if (!this.process || this.status.state === "shutdown") return;
-
-		// Don't reflect on very short outputs or planning queries
-		if (output.length < 100) return;
-		if (task.includes("[PLANNING QUERY")) return;
-		if (task.includes("[REFLECTION")) return;
-
-		const reflectionPrompt = `[REFLECTION - Internal, do not execute any tools]
-
-Look back at the work you just completed. Extract any learnings worth remembering for future sessions. Be very selective - only note things that would be genuinely useful to know later.
-
-Respond ONLY with a JSON object (no markdown, no explanation):
-{
-  "decisions": ["decision made and why (if any)"],
-  "conventions": ["pattern or convention discovered (if any)"],
-  "issues": ["gotcha or problem to watch for (if any)"],
-  "notes": ["other useful insight (if any)"]
-}
-
-Omit empty arrays. If nothing worth remembering, respond with: {}`;
-
-		try {
-			// Send reflection prompt with short timeout
-			const response = await this.send(
-				{ type: "prompt", message: reflectionPrompt },
-				undefined,
-				30000 // 30s timeout
-			);
-
-			if (!response.success) return;
-
-			// Wait for response
-			await this.waitForSettled();
-
-			// Get the reflection output
-			const lastText = await this.send({ type: "get_last_assistant_text" });
-			const reflectionOutput = (lastText.data as any)?.text || "";
-
-			// Parse and save learnings
-			this.parseAndSaveLearnings(reflectionOutput);
-		} catch {
-			// Reflection is best-effort, don't fail on errors
-		}
-	}
-
-	/**
-	 * Parse reflection output and save to memory
-	 */
-	private parseAndSaveLearnings(output: string): void {
-		if (!this.options.memory) return;
-
-		// Try to extract JSON from the output
-		let learnings: Record<string, string[]>;
-		try {
-			// Handle potential markdown code blocks
-			let jsonStr = output.trim();
-			const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-			if (jsonMatch) {
-				jsonStr = jsonMatch[1].trim();
-			}
-
-			// Find JSON object
-			const objMatch = jsonStr.match(/\{[\s\S]*\}/);
-			if (!objMatch) return;
-
-			learnings = JSON.parse(objMatch[0]);
-		} catch {
-			// Also check for explicit markers as fallback
-			this.extractMarkedMemory(output);
-			return;
-		}
-
-		// Save each learning
-		const timestamp = new Date().toISOString();
-		for (const [category, items] of Object.entries(learnings)) {
-			if (!Array.isArray(items)) continue;
-
-			for (const content of items) {
-				if (typeof content !== "string" || !content.trim()) continue;
-
-				this.options.memory.addEntry({
-					category,
-					content: content.trim(),
-					timestamp,
-					source: "agent",
-				});
-			}
-		}
-
-		// Prune periodically
-		if (Math.random() < 0.1) {
-			this.options.memory.prune();
-		}
-	}
-
-	/**
-	 * Extract explicitly marked memory (fallback)
-	 */
-	private extractMarkedMemory(output: string): void {
-		if (!this.options.memory) return;
-
-		const memoryPattern = /\[MEMORY:(\w+)\]\s*([^\[]+)/gi;
-		let match;
-
-		while ((match = memoryPattern.exec(output)) !== null) {
-			const category = match[1].toLowerCase();
-			const content = match[2].trim();
-
-			if (content) {
-				this.options.memory.addEntry({
-					category,
-					content,
-					timestamp: new Date().toISOString(),
-					source: "agent",
-				});
-			}
-		}
 	}
 }

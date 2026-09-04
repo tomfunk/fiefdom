@@ -1,36 +1,38 @@
 /**
- * Fiefdom - Multi-agent workspace orchestration
+ * Fiefdom - Multi-agent workspace orchestration (Pi extension)
  *
  * Splits a repository into "fiefs" (frontend, backend, etc.), spawns one
  * persistent RPC agent per fief, and keeps a non-writing orchestrator in
  * the main session for intake and routing.
  *
- * Configuration: .pi/fiefs.json
- * Personas: .pi/fiefs/<name>/AGENT.md
- * Memory: .pi/fiefs/<name>/memory/
+ * Config, personas and memory live in .fiefdom/ and are shared with the
+ * Claude Code adapter, so the same repo can be opened with either agent.
+ * A legacy .pi/ layout is still read when that is all a repo has.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
-import {
-	CONFIG_DIR_NAME,
-	type ExtensionAPI,
-	type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
 	type FiefConfig,
 	type FiefdomConfig,
-	findFiefdomConfigPath,
-	loadFiefdomConfig,
+	loadConfig,
+	memoryPathOf,
 	pathMatchesFief,
-} from "./config.ts";
+	personaPathOf,
+	serializeConfig,
+	toRepoRelative,
+} from "../../core/config.ts";
 import { FiefAgent, type FiefAgentStatus } from "./fief-agent.ts";
 import { ensureWorktrees, cleanupWorktrees } from "./worktrees.ts";
-import { FiefMemory } from "./memory.ts";
-import { analyzeRepository, generateConfigFromAnalysis } from "./analyze.ts";
+import { FiefMemory } from "../../core/memory.ts";
+import { analyzeRepository, generateConfigFromAnalysis } from "../../core/analyze.ts";
+import { resolveBin } from "../../core/bin.ts";
+import { ensureGitignore } from "../../core/gitignore.ts";
+import { fiefInstructions } from "../../core/persona.ts";
+import { resolvePaths } from "../../core/paths.ts";
 
 // ============================================================================
 // Extension State
@@ -43,6 +45,8 @@ interface FiefdomState {
 	worktreesDir: string | null;
 	requestLog: string[];
 	initialized: boolean;
+	/** Set when this process is itself a fief worker (see the recursion guard) */
+	childFief: { id: string; paths: string[]; shared: string[]; root: string } | null;
 }
 
 const state: FiefdomState = {
@@ -52,7 +56,24 @@ const state: FiefdomState = {
 	worktreesDir: null,
 	requestLog: [],
 	initialized: false,
+	childFief: null,
 };
+
+/**
+ * Last line of defence against orphaned worker processes: if the session ends
+ * without session_shutdown running, kill whatever is still spawned.
+ */
+let exitGuardInstalled = false;
+function installExitGuard(): void {
+	if (exitGuardInstalled) return;
+	exitGuardInstalled = true;
+
+	// Only "exit" — installing signal handlers here would override pi's own.
+	process.once("exit", () => {
+		for (const agent of state.agents.values()) agent.killNow();
+		state.agents.clear();
+	});
+}
 
 // ============================================================================
 // Main Extension
@@ -65,23 +86,34 @@ export default function fiefdom(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		// Recursion guard: fief worker agents are themselves pi subprocesses. If they
-		// re-loaded fiefdom they would re-read .pi/fiefs.json and spawn their own fiefs,
+		// re-loaded fiefdom they would re-read fiefs.json and spawn their own fiefs,
 		// recursing without bound (fork bomb -> OOM). One orchestrator, leaf workers only.
+		//
+		// A worker still loads the config read-only, so it can enforce its own path
+		// boundary the same way the Claude Code hook does for fief subagents.
 		if (process.env.PI_FIEFDOM_CHILD === "1") {
 			state.initialized = false;
+			const childConfig = loadConfig(ctx.cwd);
+			const fief = childConfig?.fiefs.find((f) => f.id === process.env.PI_FIEFDOM_FIEF);
+			state.childFief = fief
+				? {
+						id: fief.id,
+						paths: fief.paths,
+						shared: childConfig!.sharedPaths,
+						root: childConfig!.paths.repoRoot,
+					}
+				: null;
 			return;
 		}
-
-		// Find config - checks local .pi/fiefs.json first, then main worktree if applicable
-		const configPath = findFiefdomConfigPath(ctx.cwd);
 
 		// Check if this is a git repo (required for fiefdom)
 		// Note: worktrees have a .git file (not directory) pointing to the main repo
 		const gitPath = path.join(ctx.cwd, ".git");
 		const isGitRepo = fs.existsSync(gitPath);
 
-		// Load configuration
-		const config = configPath ? loadFiefdomConfig(configPath) : null;
+		// Load configuration. Checks .fiefdom/ here, then a legacy .pi/, then the
+		// main checkout when this session is running inside a worktree.
+		const config = loadConfig(ctx.cwd);
 		if (!config) {
 			// No fiefs.json - notify user about setup option
 			if (isGitRepo && ctx.hasUI) {
@@ -98,11 +130,12 @@ export default function fiefdom(pi: ExtensionAPI) {
 		state.agents.clear();
 		state.memory.clear();
 		state.requestLog = [];
+		installExitGuard();
 
 		// Set up worktrees for isolation (optional, off by default)
 		if (config.useWorktrees) {
 			try {
-				state.worktreesDir = await ensureWorktrees(ctx.cwd, config.fiefs);
+				state.worktreesDir = await ensureWorktrees(config);
 				ctx.ui.notify(`Fiefdom: Created worktrees for ${config.fiefs.length} fiefs`, "info");
 			} catch (err) {
 				ctx.ui.notify(`Fiefdom: Worktree setup failed: ${err}`, "error");
@@ -110,12 +143,10 @@ export default function fiefdom(pi: ExtensionAPI) {
 			}
 		}
 
-		// Initialize memory for each fief
-		// Resolve paths relative to config root (supports worktrees inheriting from main repo)
-		const configRoot = config._configRoot ?? ctx.cwd;
+		// Initialize memory for each fief. Paths resolve against the config root,
+		// so a worktree session shares the main checkout's memory.
 		for (const fief of config.fiefs) {
-			const memoryDir = path.join(configRoot, fief.memory);
-			state.memory.set(fief.id, new FiefMemory(memoryDir));
+			state.memory.set(fief.id, new FiefMemory(memoryPathOf(config, fief)));
 		}
 
 		// Spawn persistent fief agents
@@ -137,26 +168,31 @@ export default function fiefdom(pi: ExtensionAPI) {
 		pi.setActiveTools(readOnlyTools);
 
 		state.initialized = true;
-		ctx.ui.setStatus("fiefdom", `Fiefdom: ${state.agents.size} agents active`);
+		ctx.ui.setStatus(
+			"fiefdom",
+			`Fiefdom: ${state.agents.size} agents active` +
+				(config.paths.inherited ? " (config inherited from main checkout)" : "")
+		);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (!state.initialized) return;
 
-		// Shutdown all fief agents
-		for (const [id, agent] of state.agents) {
-			try {
-				await agent.shutdown();
-			} catch (err) {
-				console.error(`Fiefdom: Error shutting down ${id}:`, err);
-			}
-		}
+		// Shut fief agents down in parallel: one wedged child must not stop the
+		// others from being killed, or they survive the session as orphans.
+		await Promise.allSettled(
+			[...state.agents].map(([id, agent]) =>
+				agent.shutdown().catch((err) => {
+					console.error(`Fiefdom: Error shutting down ${id}:`, err);
+				})
+			)
+		);
 		state.agents.clear();
 
 		// Cleanup worktrees (only if we created them)
 		if (state.worktreesDir && state.config?.useWorktrees) {
 			try {
-				await cleanupWorktrees(ctx.cwd, state.worktreesDir);
+				await cleanupWorktrees(state.config);
 			} catch (err) {
 				console.error("Fiefdom: Error cleaning up worktrees:", err);
 			}
@@ -171,17 +207,32 @@ export default function fiefdom(pi: ExtensionAPI) {
 	// --------------------------------------------------------------------------
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (!state.initialized || !state.config) return;
+		if (event.toolName !== "write" && event.toolName !== "edit") return;
+		const targetPath = (event.input as any).path;
 
-		// Block write/edit from orchestrator (should already be removed, but safety check)
-		if (event.toolName === "write" || event.toolName === "edit") {
-			const targetPath = (event.input as any).path;
-			if (targetPath) {
-				return {
-					block: true,
-					reason: `Orchestrator cannot write files. Route this task to the appropriate fief agent.`,
-				};
-			}
+		// Fief worker: may only write inside its own territory. This is the same
+		// rule the Claude Code PreToolUse hook applies to fief subagents.
+		if (state.childFief) {
+			if (!targetPath) return;
+
+			const relative = toRepoRelative(targetPath, state.childFief.root, ctx.cwd);
+			if (relative === null) return; // Outside the repo: not fiefdom's business.
+			if (pathMatchesFief(relative, state.childFief.paths)) return;
+			if (pathMatchesFief(relative, state.childFief.shared)) return;
+
+			return {
+				block: true,
+				reason: `${relative} is outside the ${state.childFief.id} fief (${state.childFief.paths.join(", ")}). Do not edit it — report what you need and the orchestrator will route it.`,
+			};
+		}
+
+		// Orchestrator: write tools are already removed, this is the safety net.
+		if (!state.initialized || !state.config) return;
+		if (targetPath) {
+			return {
+				block: true,
+				reason: `Orchestrator cannot write files. Route this task to the appropriate fief agent.`,
+			};
 		}
 	});
 
@@ -202,7 +253,7 @@ export default function fiefdom(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: "Fiefdom not active. No .pi/fiefs.json found.",
+							text: "Fiefdom not active. No fiefs.json found — use /fiefdom-setup.",
 						},
 					],
 					details: {},
@@ -223,9 +274,7 @@ export default function fiefdom(pi: ExtensionAPI) {
 				};
 			});
 
-			const configSource = state.config._loadedFrom
-				? `Config: ${state.config._loadedFrom}`
-				: "";
+			const configSource = `Config: ${state.config.paths.configPath}`;
 
 			const text = (configSource ? configSource + "\n\n" : "") + fiefs
 				.map(
@@ -433,14 +482,10 @@ export default function fiefdom(pi: ExtensionAPI) {
 			const logEntry = `[${new Date().toISOString()}] ${from_fief} -> ${to_fief}: ${request.slice(0, 200)}...`;
 			state.requestLog.push(logEntry);
 
-			// Persist to audit log
-			const auditPath = path.join(
-				ctx.cwd,
-				CONFIG_DIR_NAME,
-				"fiefs",
-				"cross-fief-requests.log"
-			);
+			// Persist to the audit log shared with the Claude Code adapter
 			try {
+				const auditPath = state.config!.paths.auditLog;
+				fs.mkdirSync(path.dirname(auditPath), { recursive: true });
 				fs.appendFileSync(auditPath, logEntry + "\n");
 			} catch {
 				// Ignore if can't write audit log
@@ -648,10 +693,12 @@ export default function fiefdom(pi: ExtensionAPI) {
 				return;
 			}
 
+			const paths = resolvePaths(ctx.cwd);
+
 			// Confirm
 			const confirm = await ctx.ui.confirm(
 				"Apply configuration?",
-				`This will create .pi/fiefs.json and persona files for ${analysis.proposedFiefs.length} fiefs.`
+				`This will create ${paths.stateDirName}/fiefs.json and persona files for ${analysis.proposedFiefs.length} fiefs.`
 			);
 
 			if (!confirm) {
@@ -660,39 +707,44 @@ export default function fiefdom(pi: ExtensionAPI) {
 			}
 
 			// Generate and write config
-			const { config, personas } = generateConfigFromAnalysis(analysis);
+			const { fiefs, personas } = generateConfigFromAnalysis(
+				analysis,
+				paths.stateDirName
+			);
 
-			// Create directories and files
-			const configDir = path.join(ctx.cwd, CONFIG_DIR_NAME);
-			const fiefsDir = path.join(configDir, "fiefs");
-
+			const fiefsDir = paths.fiefsDir;
 			await fs.promises.mkdir(fiefsDir, { recursive: true });
 
 			// Write config
 			await fs.promises.writeFile(
-				path.join(configDir, "fiefs.json"),
-				config,
+				paths.configPath,
+				serializeConfig({ fiefs }),
 				"utf-8"
 			);
 
-			// Write personas and create memory dirs
+			// Write personas and create memory dirs. An existing persona is left
+			// alone — reconfiguring must not discard hand-written prompts.
 			for (const [fiefId, personaContent] of personas) {
 				const fiefDir = path.join(fiefsDir, fiefId);
 				await fs.promises.mkdir(path.join(fiefDir, "memory"), { recursive: true });
 
-				await fs.promises.writeFile(
-					path.join(fiefDir, "AGENT.md"),
-					`# ${fiefId} Fief Agent\n\n${personaContent}`,
-					"utf-8"
-				);
+				const personaPath = path.join(fiefDir, "AGENT.md");
+				if (!fs.existsSync(personaPath)) {
+					await fs.promises.writeFile(
+						personaPath,
+						`# ${fiefId} Fief Agent\n\n${personaContent}`,
+						"utf-8"
+					);
+				}
 			}
 
-			// Add memory dirs and worktrees to .gitignore
-			await ensureGitignore(ctx.cwd);
+			// Config, personas, memory and generated agents all stay local
+			ensureGitignore(ctx.cwd, paths.stateDirName);
 
 			ctx.ui.notify(
 				`Fiefdom configured with ${analysis.proposedFiefs.length} fiefs.\n\n` +
-					"Restart your session or use /reload to activate.",
+					"Restart your session or use /reload to activate.\n" +
+					`To use the same fiefs in Claude Code, run \`${resolveBin(paths.stateDir)} sync\`.`,
 				"info"
 			);
 		},
@@ -804,40 +856,6 @@ export default function fiefdom(pi: ExtensionAPI) {
 }
 
 // ============================================================================
-// Helper: Ensure .gitignore entries
-// ============================================================================
-
-async function ensureGitignore(repoRoot: string): Promise<void> {
-	const gitignorePath = path.join(repoRoot, ".gitignore");
-	const entriesToAdd = [
-		"# Fiefdom (local-only, not shared)",
-		".pi/fiefs.json",
-		".pi/fiefs/",
-		".pi/worktrees/",
-		".pi/cross-fief-requests.log",
-	];
-
-	let content = "";
-	try {
-		content = await fs.promises.readFile(gitignorePath, "utf-8");
-	} catch {
-		// No .gitignore yet
-	}
-
-	const linesToAdd: string[] = [];
-	for (const entry of entriesToAdd) {
-		if (!content.includes(entry.replace("# Fiefdom", "").trim())) {
-			linesToAdd.push(entry);
-		}
-	}
-
-	if (linesToAdd.length > 0) {
-		const addition = "\n" + linesToAdd.join("\n") + "\n";
-		await fs.promises.appendFile(gitignorePath, addition);
-	}
-}
-
-// ============================================================================
 // Helper: Spawn Fief Agent
 // ============================================================================
 
@@ -845,6 +863,8 @@ async function spawnFiefAgent(
 	ctx: ExtensionContext,
 	fief: FiefConfig
 ): Promise<FiefAgent> {
+	const config = state.config!;
+
 	// Determine working directory (worktree if available, otherwise main repo)
 	let cwd = ctx.cwd;
 	if (state.worktreesDir) {
@@ -854,16 +874,14 @@ async function spawnFiefAgent(
 		}
 	}
 
-	// Load persona (system prompt)
-	// Resolve relative to config root (supports worktrees inheriting from main repo)
-	const configRoot = state.config?._configRoot ?? ctx.cwd;
-	const personaPath = path.join(configRoot, fief.persona);
+	// Load persona (system prompt). Resolved against the config root, so a
+	// worktree session uses the main checkout's personas.
 	let persona = "";
 	try {
-		persona = fs.readFileSync(personaPath, "utf-8");
+		persona = fs.readFileSync(personaPathOf(config, fief), "utf-8");
 	} catch {
 		// Use default persona
-		persona = `You are the ${fief.id} specialist agent. You have write access only to: ${fief.paths.join(", ")}`;
+		persona = `You are the ${fief.id} specialist agent for this repository.`;
 	}
 
 	// Load memory context
@@ -873,10 +891,9 @@ async function spawnFiefAgent(
 	// Create and start the agent
 	const agent = new FiefAgent(fief.id, {
 		cwd,
-		allowedPaths: fief.paths,
 		persona,
+		instructions: fiefInstructions(fief, config, resolveBin(config.paths.stateDir)),
 		memoryContext,
-		memory,
 	});
 
 	await agent.start();

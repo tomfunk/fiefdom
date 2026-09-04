@@ -1,60 +1,123 @@
 # Fiefdom
 
-Multi-agent workspace orchestration for Pi. Splits a repository into "fiefs" (frontend, backend, etc.), spawns one persistent agent per fief, and keeps a non-writing orchestrator in the main session for intake and routing.
+Multi-agent workspace orchestration for **Claude Code** and **Pi**.
 
-## Architecture
+Fiefdom splits a repository into "fiefs" (frontend, backend, …), gives each one
+a specialist agent that may only write inside its own territory, and keeps the
+main session as a non-writing orchestrator that plans and routes.
+
+One repo, either harness. Config, personas and accumulated memory live in
+`.fiefdom/` and are shared, so a fief you taught something under Pi knows it
+under Claude Code too.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Orchestrator                            │
-│  • No Write/Edit tools (read-only)                          │
-│  • Routes tasks to fiefs                                    │
-│  • Coordinates cross-fief work                              │
-│  • Aggregates fief learnings                                │
-└───────────────┬─────────────────────┬───────────────────────┘
-                │                     │
-       ┌────────▼────────┐   ┌────────▼────────┐
-       │  Frontend Fief  │   │  Backend Fief   │
-       │  (RPC Process)  │   │  (RPC Process)  │
-       │                 │   │                 │
-       │ Paths:          │   │ Paths:          │
-       │ - frontend/**   │   │ - backend/**    │
-       │ - shared-ui/**  │   │ - services/**   │
-       │                 │   │                 │
-       │ Worktree:       │   │ Worktree:       │
-       │ .pi/worktrees/  │   │ .pi/worktrees/  │
-       │   frontend/     │   │   backend/      │
-       └─────────────────┘   └─────────────────┘
+                    ┌─────────────────────────────┐
+                    │        Orchestrator         │
+                    │  (your main session)        │
+                    │  • no Write/Edit            │
+                    │  • plans, routes, reconciles│
+                    └───────┬─────────────┬───────┘
+                            │             │
+                 ┌──────────▼───┐   ┌─────▼────────┐
+                 │ frontend fief│   │ backend fief │
+                 │ frontend/**  │   │ backend/**   │
+                 │ shared-ui/** │   │ services/**  │
+                 └──────────────┘   └──────────────┘
+
+  Claude Code: fiefs are subagents (.claude/agents/fief-*.md), boundaries
+               enforced by a PreToolUse hook.
+  Pi:          fiefs are persistent RPC worker processes, boundaries enforced
+               in-process by each worker.
 ```
 
-## Setup
-
-### 1. Install Dependencies
+## Install
 
 ```bash
-cd ~/.pi/agent/extensions/fiefdom
+git clone https://github.com/tomfunk/fiefdom
+cd fiefdom
 npm install
 ```
 
-### 2. Run Setup
+Requires Node 22.18+ (the CLI runs TypeScript directly) or Bun.
 
-When you open a git repository without fiefdom configured, you'll see:
+Optionally put the CLI on your PATH:
+
+```bash
+npm link          # provides `fiefdom`
+```
+
+For Pi, point the extension at this checkout:
+
+```bash
+mkdir -p ~/.pi/agent/extensions
+ln -s "$PWD" ~/.pi/agent/extensions/fiefdom
+```
+
+## Quick start — Claude Code
+
+From the repository you want to divide:
+
+```bash
+fiefdom init
+```
+
+That analyzes the repo, writes `.fiefdom/fiefs.json` plus a persona per fief,
+and generates the Claude Code side:
+
+| Generated | Purpose |
+|---|---|
+| `.claude/agents/fief-<id>.md` | one subagent per fief, with its persona, territory and memory instructions |
+| `.claude/commands/fiefdom*.md` | `/fiefdom`, `/fiefdom-setup`, `/fiefdom-review` |
+| `.claude/settings.local.json` | `PreToolUse` guard + `SessionStart` briefing hooks |
+| `.gitignore` entries | all of the above stays local |
+
+Restart Claude Code. The orchestrator gets a briefing at session start, and
+routes work by spawning `fief-<id>` subagents (continuing them with
+`SendMessage` so they keep their context). Its own `Write`/`Edit` calls are
+denied with a message naming the fief that owns the file.
+
+Prefer to be asked before anything is written? Run `/fiefdom-setup` instead of
+`fiefdom init` — same result, but it walks you through the proposal first.
+
+## Quick start — Pi
 
 ```
-Fiefdom: Not configured. Use /fiefdom-setup to divide this repo.
+pi
+/fiefdom-setup
 ```
 
-Run `/fiefdom-setup` and Fiefdom will:
-1. Analyze your repository structure
-2. Detect common patterns (frontend/, backend/, packages/, etc.)
-3. Propose fief divisions with confidence level
-4. Let you review and edit the proposal
-5. Generate configuration and persona files
-6. Add all fiefdom files to `.gitignore` (everything stays local)
+Pi spawns one persistent worker per fief and removes `write`/`edit` from the
+orchestrator. The tools `list_fiefs`, `route_ticket`, `query_fief`,
+`request_from_fief`, `get_fief_memory` and `get_request_log` drive it.
 
-### Manual Configuration
+Already configured a repo with either harness? The other one picks it up as-is
+(run `fiefdom sync` after changing the config, so the generated Claude Code
+files match).
 
-Alternatively, create `.pi/fiefs.json` manually:
+## Layout
+
+Everything is local-only and gitignored:
+
+```
+.fiefdom/
+├── fiefs.json                    # config — the single source of truth
+├── fiefs/
+│   └── frontend/
+│       ├── AGENT.md              # persona: the fief's system prompt
+│       └── memory/
+│           ├── decisions.jsonl
+│           ├── conventions.jsonl
+│           ├── issues.jsonl
+│           └── notes.jsonl
+├── bin/fiefdom                   # shim onto your fiefdom checkout
+├── worktrees/                    # only when useWorktrees is on
+└── cross-fief-requests.log
+```
+
+Repos set up by fiefdom 0.1 keep working from `.pi/`; `fiefdom migrate` moves
+them to `.fiefdom/`.
+
+## Configuration
 
 ```json
 {
@@ -62,203 +125,152 @@ Alternatively, create `.pi/fiefs.json` manually:
     {
       "id": "frontend",
       "paths": ["frontend/**", "shared-ui/**"],
-      "persona": ".pi/fiefs/frontend/AGENT.md",
-      "memory": ".pi/fiefs/frontend/memory/"
-    },
-    {
-      "id": "backend",
-      "paths": ["backend/**", "services/**", "api/**"],
-      "persona": ".pi/fiefs/backend/AGENT.md",
-      "memory": ".pi/fiefs/backend/memory/"
+      "persona": ".fiefdom/fiefs/frontend/AGENT.md",
+      "memory": ".fiefdom/fiefs/frontend/memory/",
+      "description": "React app and shared components"
     }
-  ]
+  ],
+  "useWorktrees": false,
+  "enforcement": "strict",
+  "sharedPaths": ["package-lock.json"]
 }
 ```
 
-### 3. Create Personas
+| Field | Meaning |
+|---|---|
+| `paths` | globs the fief may write |
+| `persona` | system prompt; edit this, not the generated agent file |
+| `description` | used as the subagent's `description` (how Claude decides to delegate) |
+| `useWorktrees` | give each fief its own git worktree (`isolation: worktree` in Claude Code) |
+| `enforcement` | `strict` (default): only fiefs write, only inside their paths · `orchestrator`: only the orchestrator is blocked · `off` |
+| `sharedPaths` | globs any fief may write — lockfiles, shared types |
 
-Each fief needs a persona file (system prompt). Create `.pi/fiefs/<id>/AGENT.md`:
+After editing, run `fiefdom sync` and restart the session.
 
-```markdown
-# Frontend Specialist
+### Ownership is the point
 
-You are the frontend expert for this project. You understand:
-- React/Vue/Angular (as appropriate)
-- State management patterns
-- Component architecture
-- CSS/styling conventions
+Paths no fief owns are writable by nobody, and that is deliberate. A file that
+cannot be owned is usually telling you something about the repository rather
+than about your config: it serves several concerns at once, or sits on a
+boundary nobody has decided. Prefer moving or splitting the code over widening
+a fief, and treat `sharedPaths` as a note that a decision is still outstanding.
 
-## Conventions
+`fiefdom status` measures this exactly, over the files git tracks:
 
-- Use functional components
-- State goes in hooks
-- Follow existing naming patterns
+```
+  coverage: 257/257 tracked files owned
 ```
 
-### 4. Start a Session
+It also reports **contested** files — claimed by two fiefs, where first match
+silently wins — and groups anything unowned so you can see the shape of the
+gap. Aim for full coverage with an empty `sharedPaths`; the files that resist
+are the interesting ones.
+
+## Memory
+
+Fiefs accumulate learnings across sessions, in four categories: `decisions`,
+`conventions`, `issues`, `notes`. Entries are deduped, truncated to 500
+characters and capped at 50 per category.
+
+The agent writes them itself, at the end of a task:
 
 ```bash
-pi
+fiefdom memory add --fief frontend --json '{"conventions":["State lives in hooks, never in context"]}'
 ```
 
-When Fiefdom detects `.pi/fiefs.json`, it will:
-1. Create git worktrees for each fief
-2. Spawn persistent RPC agents
-3. Remove Write/Edit tools from the orchestrator
-4. Display status in the footer
+and reads them at the start of one:
 
-## Usage
+```bash
+fiefdom memory show --fief frontend
+```
 
-### Orchestrator Workflow
-
-The typical workflow is:
-
-1. **User describes feature**: "I want to add user profiles"
-
-2. **Orchestrator queries fiefs**:
-   ```
-   Use query_fief to ask frontend: "What would you need to implement for user profiles?"
-   Use query_fief to ask backend: "What would you need to implement for user profiles?"
-   ```
-
-3. **Orchestrator coordinates**:
-   ```
-   Based on the responses, the frontend needs a ProfileCard component and 
-   backend needs a /users/:id endpoint. Use request_from_fief to have them 
-   agree on the API contract.
-   ```
-
-4. **Orchestrator routes tasks**:
-   ```
-   Use route_ticket to frontend: "Implement ProfileCard component that..."
-   Use route_ticket to backend: "Implement GET /users/:id endpoint that..."
-   ```
-
-### Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `list_fiefs` | Show all fiefs and their status |
-| `route_ticket` | Send a task to a fief agent |
-| `query_fief` | Ask a fief what it would contribute (planning) |
-| `request_from_fief` | Cross-fief coordination request |
-| `get_fief_memory` | View a fief's accumulated learnings |
-| `get_request_log` | View audit log of all requests |
-
-### Fief Memory
-
-Fief agents **automatically extract learnings** after completing tasks. No explicit markers needed.
-
-After each task, the agent reflects and saves:
-- **Decisions**: Architectural choices and their reasoning
-- **Conventions**: Patterns and coding standards discovered
-- **Issues**: Gotchas, bugs, and things to watch for
-- **Notes**: Other useful insights
-
-Memory is:
-- **Selective**: Only genuinely useful insights are saved
-- **Lean**: Capped at 50 entries per category, truncated to 500 chars
-- **Local**: Everything gitignored - config, personas, memory, worktrees
-- **Persistent**: Survives across sessions
-
-The orchestrator can view fief memories to understand what each specialist has learned.
+Both harnesses use the same files, so this is one shared body of knowledge per
+fief. (Fiefdom 0.1 extracted memory with an extra reflection prompt after every
+task; that added two messages to the worker's conversation each time and grew
+its context without bound.)
 
 ## Enforcement
 
-Write restrictions are enforced at two layers:
+Two layers, and it is worth being precise about what each catches:
 
-### 1. Tool-Call Interception
-The extension intercepts `write` and `edit` tool calls and blocks them for the orchestrator.
+1. **Write guard.** In Claude Code, a `PreToolUse` hook on
+   `Write|Edit|MultiEdit|NotebookEdit` reads the payload's `agent_type`: no
+   fief identity means the orchestrator (or an unrelated subagent) and the
+   write is denied; a `fief-<id>` agent is checked against that fief's globs.
+   In Pi, each worker enforces the same rule in-process, and the orchestrator
+   has its write tools removed.
+2. **Worktrees** (optional). With `useWorktrees`, each fief works in its own
+   checkout, so a fief cannot see, let alone corrupt, another's working tree.
+   The guard understands both fiefdom's worktrees and the ones Claude Code
+   creates for `isolation: worktree`.
 
-### 2. Filesystem Isolation
-Each fief runs in its own git worktree (`.pi/worktrees/<fief>/`), providing filesystem-level isolation.
+What this does *not* catch: writes performed through the shell. `sed -i`,
+`> file` and friends go through `Bash`, which the guard deliberately does not
+police — matching on command text is guesswork, and false denials are worse
+than the leak. Turn on `useWorktrees` if you need shell writes contained too.
 
-## Configuration Reference
+Escape hatches: `FIEFDOM_DISABLE=1`, `"enforcement": "off"`, or a session in
+`bypassPermissions` mode.
 
-### fiefs.json
-
-```json
-{
-  "fiefs": [
-    {
-      "id": "string",           // Unique identifier
-      "paths": ["glob/**"],     // Files this fief can write
-      "persona": "path.md",     // System prompt (optional)
-      "memory": "path/"         // Memory directory (optional)
-    }
-  ]
-}
-```
-
-### Persona Files
-
-Markdown files with instructions for the fief agent. Can include:
-- Role description
-- Technical context
-- Conventions
-- Constraints
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/fiefdom` | Show status and available tools |
-| `/fiefdom-setup` | Analyze repo and configure fiefs (first-time or reconfigure) |
-| `/fiefdom-review` | Review current divisions, find issues, see suggestions |
-
-## Files
-
-All fiefdom files are gitignored (local-only, per-machine):
+## CLI
 
 ```
-.pi/
-├── fiefs.json                    # Configuration
-├── fiefs/
-│   ├── frontend/
-│   │   ├── AGENT.md              # Persona
-│   │   └── memory/
-│   │       ├── decisions.jsonl   # Persistent memory
-│   │       ├── conventions.jsonl
-│   │       ├── issues.jsonl
-│   │       └── notes.jsonl
-│   └── backend/
-│       ├── AGENT.md
-│       └── memory/
-├── worktrees/                    # Git worktrees (auto-created)
-│   ├── frontend/
-│   └── backend/
-└── cross-fief-requests.log       # Audit trail
+fiefdom init [--worktrees] [--enforcement strict|orchestrator|off] [--force]
+fiefdom sync                     Regenerate .claude/ files from the config
+fiefdom status [--json]          Fiefs, file coverage, learnings, ownership gaps
+fiefdom review                   Boundary review with suggestions
+fiefdom analyze [--json]         Propose a division without writing anything
+fiefdom owner <path>             Which fief owns a path (or shared/unassigned)
+fiefdom migrate                  Move a legacy .pi/ layout to .fiefdom/
+
+fiefdom memory show [--fief <id>] [--category <c>] [--full]
+fiefdom memory add --fief <id> --json '{"decisions":["..."]}'
+fiefdom memory clear --fief <id>
+
+fiefdom log --from <fief> --to <fief> --message "..."
+fiefdom log show [--limit 50]
 ```
 
-## Reviewing & Reorganizing
+## Repository layout
 
-Use `/fiefdom-review` to:
-- See current fief stats (messages, memories)
-- View recent learnings from each fief
-- Identify unassigned directories
-- Get suggestions for new fiefs
+```
+core/          harness-agnostic: config, paths, memory, analysis, persona text
+adapters/pi/   Pi extension: RPC workers, worktrees
+adapters/claude/  Claude Code adapter: CLI, generators, hooks
+bin/fiefdom.ts entry point
+```
 
-To reorganize:
-1. Edit `.pi/fiefs.json` directly
-2. Update/create persona files
-3. Use `/reload` to apply changes
-
-Or run `/fiefdom-setup` again (memories are preserved).
-
-## Limitations
-
-- Requires git repository (for worktree isolation)
-- Spawns one process per fief (resource usage)
-- Cross-fief file edits require coordination
-- Memory reflection adds ~1 extra API call per task
+Adding a third harness means writing one adapter; `core/` should not need to
+know about it.
 
 ## Troubleshooting
 
-### "Not a git repository"
-Fiefdom requires git for worktree isolation. Initialize git or use a git repo.
+**"Not a git repository"** — worktree isolation needs git; `git init` first.
 
-### Fief agent not starting
-Check the persona file exists and is valid markdown.
+**A fief agent won't start (Pi)** — check the persona file exists and is valid
+markdown. Startup is bounded at 30s, after which the worker is killed rather
+than left hanging.
 
-### Memory not persisting
-Ensure `.pi/fiefs/<id>/memory/` directory is writable.
+**Claude Code isn't blocking writes** — hooks load at session start; restart
+after `fiefdom sync`. Check `.claude/settings.local.json` contains the two
+fiefdom hooks and that `.fiefdom/bin/fiefdom` is executable.
+
+**Memory isn't persisting** — make sure `.fiefdom/fiefs/<id>/memory/` is
+writable, and that the agent is calling `fiefdom memory add` (it is instructed
+to, but a short task may legitimately have nothing worth saving).
+
+**Pi eats all your RAM** — each fief is a full `pi` process (~115 MB idle,
+more as its conversation grows), so N fiefs cost N processes. Keep the number
+of fiefs to what the repo actually needs. Version 0.2 fixes the leaks that made
+this much worse: workers no longer recurse into spawning their own fiefs,
+shutdown no longer hangs on an already-dead child (which orphaned every
+remaining worker), and settle-waiters are released when a child dies.
+
+## Limitations
+
+- One process per fief in Pi; one subagent per fief in Claude Code. Both cost
+  real resources — divide a repo into the fiefs it needs, not the maximum.
+- Cross-fief changes need coordination through the orchestrator by design.
+- Shell writes bypass the guard (see Enforcement).
+- Claude Code subagents live for the session; what persists across sessions is
+  the fief's memory, not its conversation.
