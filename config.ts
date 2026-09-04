@@ -14,6 +14,7 @@ export interface FiefConfig {
 
 export interface FiefdomConfig {
 	fiefs: FiefConfig[];
+	useWorktrees?: boolean;  // Default: false
 }
 
 /**

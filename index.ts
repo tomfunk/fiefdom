@@ -87,13 +87,15 @@ export default function fiefdom(pi: ExtensionAPI) {
 		state.memory.clear();
 		state.requestLog = [];
 
-		// Set up worktrees for isolation
-		try {
-			state.worktreesDir = await ensureWorktrees(ctx.cwd, config.fiefs);
-			ctx.ui.notify(`Fiefdom: Created worktrees for ${config.fiefs.length} fiefs`, "info");
-		} catch (err) {
-			ctx.ui.notify(`Fiefdom: Worktree setup failed: ${err}`, "error");
-			state.worktreesDir = null;
+		// Set up worktrees for isolation (optional, off by default)
+		if (config.useWorktrees) {
+			try {
+				state.worktreesDir = await ensureWorktrees(ctx.cwd, config.fiefs);
+				ctx.ui.notify(`Fiefdom: Created worktrees for ${config.fiefs.length} fiefs`, "info");
+			} catch (err) {
+				ctx.ui.notify(`Fiefdom: Worktree setup failed: ${err}`, "error");
+				state.worktreesDir = null;
+			}
 		}
 
 		// Initialize memory for each fief
@@ -137,8 +139,8 @@ export default function fiefdom(pi: ExtensionAPI) {
 		}
 		state.agents.clear();
 
-		// Cleanup worktrees
-		if (state.worktreesDir) {
+		// Cleanup worktrees (only if we created them)
+		if (state.worktreesDir && state.config?.useWorktrees) {
 			try {
 				await cleanupWorktrees(ctx.cwd, state.worktreesDir);
 			} catch (err) {
