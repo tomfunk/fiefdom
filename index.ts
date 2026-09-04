@@ -64,6 +64,14 @@ export default function fiefdom(pi: ExtensionAPI) {
 	// --------------------------------------------------------------------------
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Recursion guard: fief worker agents are themselves pi subprocesses. If they
+		// re-loaded fiefdom they would re-read .pi/fiefs.json and spawn their own fiefs,
+		// recursing without bound (fork bomb -> OOM). One orchestrator, leaf workers only.
+		if (process.env.PI_FIEFDOM_CHILD === "1") {
+			state.initialized = false;
+			return;
+		}
+
 		// Find config - checks local .pi/fiefs.json first, then main worktree if applicable
 		const configPath = findFiefdomConfigPath(ctx.cwd);
 

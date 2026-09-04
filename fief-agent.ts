@@ -106,6 +106,9 @@ export class FiefAgent {
 			cwd: this.options.cwd,
 			shell: false,
 			stdio: ["pipe", "pipe", "pipe"],
+			// Marks this pi as a fief worker so its own fiefdom extension bails out
+			// instead of spawning another layer of agents (see index.ts recursion guard).
+			env: { ...process.env, PI_FIEFDOM_CHILD: "1" },
 		});
 
 		// Handle stdout (JSONL responses and events)
@@ -132,12 +135,15 @@ export class FiefAgent {
 			this.rejectAllPending(err);
 		});
 
-		// Wait for process to be ready (get initial state)
+		// Wait for process to be ready (get initial state). Bounded: a child that never
+		// completes the RPC handshake must fail fast, not hang session_start forever.
 		try {
-			await this.send({ type: "get_state" });
+			await this.send({ type: "get_state" }, undefined, 30000);
 			this.status = { state: "idle", messageCount: 0 };
 		} catch (err) {
 			this.status = { state: "error", errorMessage: String(err) };
+			this.process?.kill("SIGKILL");
+			this.process = null;
 			throw err;
 		}
 	}
