@@ -7,7 +7,7 @@ Multi-agent workspace orchestration for Pi. Splits a repository into "fiefs" (fr
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Orchestrator                            │
-│  • No Write/Edit tools (read-only)                         │
+│  • No Write/Edit tools (read-only)                          │
 │  • Routes tasks to fiefs                                    │
 │  • Coordinates cross-fief work                              │
 │  • Aggregates fief learnings                                │
