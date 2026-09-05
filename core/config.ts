@@ -37,7 +37,6 @@ export type Enforcement = "strict" | "orchestrator" | "off";
 
 export interface FiefdomConfig {
 	fiefs: FiefConfig[];
-	useWorktrees: boolean;
 	enforcement: Enforcement;
 	/** Globs any fief agent may write (lockfiles, shared types, ...) */
 	sharedPaths: string[];
@@ -101,9 +100,6 @@ export function loadConfigFrom(paths: FiefdomPaths): FiefdomConfig | null {
 
 	return {
 		fiefs,
-		// NOTE: this used to be dropped on the floor here, which silently
-		// disabled worktree isolation everywhere.
-		useWorktrees: raw.useWorktrees === true,
 		enforcement,
 		sharedPaths: Array.isArray(raw.sharedPaths) ? raw.sharedPaths : [],
 		paths,
@@ -113,7 +109,6 @@ export function loadConfigFrom(paths: FiefdomPaths): FiefdomConfig | null {
 /** Serialize a config back to the on-disk shape (without derived fields). */
 export function serializeConfig(config: {
 	fiefs: FiefConfig[];
-	useWorktrees?: boolean;
 	enforcement?: Enforcement;
 	sharedPaths?: string[];
 }): string {
@@ -127,7 +122,6 @@ export function serializeConfig(config: {
 					memory: f.memory,
 					...(f.description ? { description: f.description } : {}),
 				})),
-				useWorktrees: config.useWorktrees ?? false,
 				enforcement: config.enforcement ?? "strict",
 				sharedPaths: config.sharedPaths ?? [],
 			},

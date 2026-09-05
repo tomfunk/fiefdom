@@ -98,7 +98,7 @@ and generates the Claude Code side:
 |---|---|
 | `.claude/agents/fief-<id>.md` | one subagent per fief, with its persona, territory and memory instructions |
 | `.claude/commands/fiefdom*.md` | `/fiefdom`, `/fiefdom-setup`, `/fiefdom-review` |
-| `.claude/settings.local.json` | `PreToolUse` guard + `SessionStart` briefing hooks |
+| `.claude/settings.local.json` | `PreToolUse` guard, `PostToolUse` detector, `SessionStart` briefing |
 | `.gitignore` entries | all of the above stays local |
 
 Restart Claude Code. The orchestrator gets a briefing at session start, and
@@ -140,7 +140,6 @@ Everything is local-only and gitignored:
 │           ├── issues.jsonl
 │           └── notes.jsonl
 ├── bin/fiefdom                   # shim onto your fiefdom checkout
-├── worktrees/                    # only when useWorktrees is on
 └── cross-fief-requests.log
 ```
 
@@ -160,7 +159,6 @@ them to `.fiefdom/`.
       "description": "React app and shared components"
     }
   ],
-  "useWorktrees": false,
   "enforcement": "strict",
   "sharedPaths": ["package-lock.json"]
 }
@@ -171,7 +169,6 @@ them to `.fiefdom/`.
 | `paths` | globs the fief may write |
 | `persona` | system prompt; edit this, not the generated agent file |
 | `description` | used as the subagent's `description` (how Claude decides to delegate) |
-| `useWorktrees` | give each fief its own git worktree (`isolation: worktree` in Claude Code) |
 | `enforcement` | `strict` (default): only fiefs write, only inside their paths · `orchestrator`: only the orchestrator is blocked · `off` |
 | `sharedPaths` | globs any fief may write — lockfiles, shared types |
 
@@ -221,34 +218,59 @@ its context without bound.)
 
 ## Enforcement
 
-Two layers, and it is worth being precise about what each catches:
+Three layers, and it is worth being precise about what each one catches.
 
-1. **Write guard.** In Claude Code, a `PreToolUse` hook on
-   `Write|Edit|MultiEdit|NotebookEdit` reads the payload's `agent_type`: no
-   fief identity means the orchestrator (or an unrelated subagent) and the
-   write is denied; a `fief-<id>` agent is checked against that fief's globs.
-   In Pi, each worker enforces the same rule in-process, and the orchestrator
-   has its write tools removed.
-2. **Worktrees** (optional). With `useWorktrees`, each fief works in its own
-   checkout, so a fief cannot see, let alone corrupt, another's working tree.
-   The guard understands both fiefdom's worktrees and the ones Claude Code
-   creates for `isolation: worktree`.
+**1. File tools — decided exactly.** `Write`, `Edit`, `MultiEdit` and
+`NotebookEdit` name their target in the hook payload, so the `PreToolUse` guard
+checks it against the actor's paths and denies outright. In Claude Code the
+actor comes from the payload's `agent_type`: no fief identity means the
+orchestrator (or an unrelated subagent), and it does not write at all. In Pi
+each worker applies the same rule in-process.
 
-The guard reads `Bash` as well as the file tools, because an agent working
-through the shell edits with `sed -i` and heredocs rather than `Write`. It
-extracts the paths a command clearly writes — redirections, `tee`, in-place
-`sed`/`perl`, `cp`/`mv` destinations, `rm`, `touch`, `dd of=`, `patch` — and
-applies the same ownership rule, following a leading `cd` so relative paths
-mean what they say.
+**2. Shell commands — read, then decided.** An agent working through Bash edits
+with `sed -i` and heredocs rather than `Write`, so the guard extracts the paths
+a command clearly writes — redirections, `tee`, in-place `sed`/`perl`, `cp`/`mv`
+destinations, `rm`, `touch`, `dd of=`, `patch` — following a leading `cd` so
+relative paths resolve where the shell would put them. It judges only what it
+can read unambiguously; a false denial breaks a build, which is worse than a
+missed write.
 
-It only judges what it can read unambiguously. A path built from a variable, a
-glob, or a write buried inside `python -c` is allowed through: a missed write
-is a boundary the agent is trusted to respect anyway, while a false denial
-blocks a build or a test run. `useWorktrees` is the answer if you want
-containment that does not depend on reading commands.
+**3. Anything else — detected afterwards.** Plenty of writes are invisible to
+any parser: `python -c "open(...)"`, a path built from a variable, a glob, a
+codegen script. So fiefdom snapshots the working tree before a shell command
+and compares after (`git status` costs ~10ms), then tells the agent what
+actually landed outside its territory:
+
+```
+Fiefdom: that command wrote outside the frontend fief:
+  backend/generated.py (belongs to backend)
+```
+
+It reports rather than reverts — the change may be wanted, and destroying work
+to enforce a boundary is a worse failure than crossing one — but it arrives in
+the agent's own turn, while undoing is still one command.
+
+Together: nothing gets through unnoticed, and the common cases never happen at
+all. What this is *not* is a sandbox. It is built for an agent that respects
+the division and occasionally forgets, not one working around it. Every write
+is in git either way, so a crossed boundary is visible and revertible.
 
 Escape hatches: `FIEFDOM_DISABLE=1`, `"enforcement": "off"`, or a session in
 `bypassPermissions` mode.
+
+## Running from a worktree
+
+Fiefdom does not create checkouts of its own. Fiefs work where your session
+works, and a session started inside a linked worktree finds the config in the
+main checkout, so the same fiefs, personas and memory apply:
+
+```bash
+git worktree add ../myrepo-feature -b feature
+cd ../myrepo-feature && claude        # same fiefs, no setup
+```
+
+Paths are matched against whichever checkout contains them, so a fief working
+in a worktree is judged by the same globs as one in the main directory.
 
 ## CLI
 
@@ -283,7 +305,8 @@ know about it.
 
 ## Troubleshooting
 
-**"Not a git repository"** — worktree isolation needs git; `git init` first.
+**"Not a git repository"** — fiefdom needs git to resolve ownership and to
+detect writes; `git init` first.
 
 **A fief agent won't start (Pi)** — check the persona file exists and is valid
 markdown. Startup is bounded at 30s, after which the worker is killed rather
@@ -309,6 +332,7 @@ remaining worker), and settle-waiters are released when a child dies.
 - One process per fief in Pi; one subagent per fief in Claude Code. Both cost
   real resources — divide a repo into the fiefs it needs, not the maximum.
 - Cross-fief changes need coordination through the orchestrator by design.
-- Shell writes bypass the guard (see Enforcement).
+- Writes the guard cannot read are caught after the fact, not prevented (see
+  Enforcement).
 - Claude Code subagents live for the session; what persists across sessions is
   the fief's memory, not its conversation.

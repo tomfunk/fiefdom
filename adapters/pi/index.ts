@@ -26,7 +26,6 @@ import {
 	toRepoRelative,
 } from "../../core/config.ts";
 import { FiefAgent, type FiefAgentStatus } from "./fief-agent.ts";
-import { ensureWorktrees, cleanupWorktrees } from "./worktrees.ts";
 import { FiefMemory } from "../../core/memory.ts";
 import { analyzeRepository, generateConfigFromAnalysis } from "../../core/analyze.ts";
 import { resolveBin } from "../../core/bin.ts";
@@ -42,7 +41,6 @@ interface FiefdomState {
 	config: FiefdomConfig | null;
 	agents: Map<string, FiefAgent>;
 	memory: Map<string, FiefMemory>;
-	worktreesDir: string | null;
 	requestLog: string[];
 	initialized: boolean;
 	/** Set when this process is itself a fief worker (see the recursion guard) */
@@ -53,7 +51,6 @@ const state: FiefdomState = {
 	config: null,
 	agents: new Map(),
 	memory: new Map(),
-	worktreesDir: null,
 	requestLog: [],
 	initialized: false,
 	childFief: null,
@@ -132,17 +129,6 @@ export default function fiefdom(pi: ExtensionAPI) {
 		state.requestLog = [];
 		installExitGuard();
 
-		// Set up worktrees for isolation (optional, off by default)
-		if (config.useWorktrees) {
-			try {
-				state.worktreesDir = await ensureWorktrees(config);
-				ctx.ui.notify(`Fiefdom: Created worktrees for ${config.fiefs.length} fiefs`, "info");
-			} catch (err) {
-				ctx.ui.notify(`Fiefdom: Worktree setup failed: ${err}`, "error");
-				state.worktreesDir = null;
-			}
-		}
-
 		// Initialize memory for each fief. Paths resolve against the config root,
 		// so a worktree session shares the main checkout's memory.
 		for (const fief of config.fiefs) {
@@ -188,15 +174,6 @@ export default function fiefdom(pi: ExtensionAPI) {
 			)
 		);
 		state.agents.clear();
-
-		// Cleanup worktrees (only if we created them)
-		if (state.worktreesDir && state.config?.useWorktrees) {
-			try {
-				await cleanupWorktrees(state.config);
-			} catch (err) {
-				console.error("Fiefdom: Error cleaning up worktrees:", err);
-			}
-		}
 
 		state.initialized = false;
 		ctx.ui.setStatus("fiefdom", undefined);
@@ -649,7 +626,7 @@ export default function fiefdom(pi: ExtensionAPI) {
 			// Check for git repo
 			if (!fs.existsSync(path.join(ctx.cwd, ".git"))) {
 				ctx.ui.notify(
-					"Fiefdom requires a git repository for worktree isolation.",
+					"Fiefdom requires a git repository.",
 					"error"
 				);
 				return;
@@ -865,15 +842,6 @@ async function spawnFiefAgent(
 ): Promise<FiefAgent> {
 	const config = state.config!;
 
-	// Determine working directory (worktree if available, otherwise main repo)
-	let cwd = ctx.cwd;
-	if (state.worktreesDir) {
-		const worktreePath = path.join(state.worktreesDir, fief.id);
-		if (fs.existsSync(worktreePath)) {
-			cwd = worktreePath;
-		}
-	}
-
 	// Load persona (system prompt). Resolved against the config root, so a
 	// worktree session uses the main checkout's personas.
 	let persona = "";
@@ -890,7 +858,9 @@ async function spawnFiefAgent(
 
 	// Create and start the agent
 	const agent = new FiefAgent(fief.id, {
-		cwd,
+		// Workers run where the session runs: the main checkout, or the worktree
+		// you started in. Fiefdom does not make checkouts of its own.
+		cwd: ctx.cwd,
 		persona,
 		instructions: fiefInstructions(fief, config, resolveBin(config.paths.stateDir)),
 		memoryContext,

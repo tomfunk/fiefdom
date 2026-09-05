@@ -10,7 +10,6 @@
  *     fiefs/<id>/AGENT.md         persona (shared system prompt)
  *     fiefs/<id>/memory/*.jsonl   persistent memory
  *     cross-fief-requests.log     audit trail
- *     worktrees/<id>/             optional git worktrees
  *
  * Two kinds of inheritance are handled here:
  *
@@ -42,7 +41,6 @@ export interface FiefdomPaths {
 	stateDirName: string;
 	configPath: string;
 	fiefsDir: string;
-	worktreesDir: string;
 	auditLog: string;
 	/** True when this repo is still on the legacy `.pi/` layout */
 	legacy: boolean;
@@ -64,7 +62,6 @@ function build(
 		stateDirName: dirName,
 		configPath: path.join(stateDir, "fiefs.json"),
 		fiefsDir: path.join(stateDir, "fiefs"),
-		worktreesDir: path.join(stateDir, "worktrees"),
 		auditLog: path.join(stateDir, "cross-fief-requests.log"),
 		legacy,
 		inherited: path.resolve(repoRoot) !== path.resolve(configRoot),

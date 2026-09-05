@@ -46,7 +46,6 @@ export function agentFile(
 		"model: inherit",
 		// A fief does its own work; it does not get to spawn more agents.
 		"disallowedTools: Agent",
-		...(config.useWorktrees ? ["isolation: worktree"] : []),
 		"---",
 	].join("\n");
 
@@ -201,6 +200,18 @@ export function hookEntries(bin: string): Record<string, unknown[]> {
 						command,
 						args: [...baseArgs, "hook", "pre-tool-use"],
 						statusMessage: "Checking fief boundaries...",
+					},
+				],
+			},
+		],
+		PostToolUse: [
+			{
+				matcher: "Bash",
+				hooks: [
+					{
+						type: "command",
+						command,
+						args: [...baseArgs, "hook", "post-tool-use"],
 					},
 				],
 			},

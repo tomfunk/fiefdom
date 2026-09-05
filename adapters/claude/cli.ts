@@ -41,6 +41,7 @@ import { analyzeRepository, generateConfigFromAnalysis } from "../../core/analyz
 import { computeCoverage, groupByTopLevel } from "../../core/coverage.ts";
 import { computeCoChange } from "../../core/cochange.ts";
 import { extractWriteTargets } from "../../core/bashwrites.ts";
+import { changedPaths, loadSnapshot, saveSnapshot, snapshot } from "../../core/watch.ts";
 import {
 	agentName,
 	agentFile,
@@ -155,7 +156,6 @@ async function cmdInit(args: Args): Promise<void> {
 		paths.configPath,
 		serializeConfig({
 			fiefs,
-			useWorktrees: args.flags.worktrees === true,
 			enforcement: (flagString(args, "enforcement") as any) ?? "strict",
 			sharedPaths: [],
 		}),
@@ -344,7 +344,6 @@ function cmdStatus(args: Args): void {
 					repo: root,
 					stateDir: config.paths.stateDirName,
 					enforcement: config.enforcement,
-					useWorktrees: config.useWorktrees,
 					sharedPaths: config.sharedPaths,
 					fiefs: rows,
 					unassigned,
@@ -364,7 +363,7 @@ function cmdStatus(args: Args): void {
 
 	console.log(`Fiefdom: ${rows.length} fiefs in ${root}`);
 	console.log(
-		`Config: ${config.paths.stateDirName}/fiefs.json | enforcement: ${config.enforcement} | worktrees: ${config.useWorktrees ? "on" : "off"}`
+		`Config: ${config.paths.stateDirName}/fiefs.json | enforcement: ${config.enforcement}`
 	);
 	console.log("");
 	for (const row of rows) {
@@ -730,6 +729,7 @@ interface HookPayload {
 	permission_mode?: string;
 	tool_name?: string;
 	tool_input?: Record<string, unknown>;
+	tool_use_id?: string;
 	agent_id?: string;
 	agent_type?: string;
 }
@@ -785,17 +785,7 @@ function repoRelativeForActor(
 		: path.resolve(cwd ?? repoRoot, target);
 
 	const direct = toRepoRelative(absolute, repoRoot);
-	if (direct !== null) {
-		// A fiefdom worktree lives inside the main checkout; strip the
-		// ".fiefdom/worktrees/<id>/" prefix so globs still line up.
-		const prefix = normalizeRepoPath(path.relative(repoRoot, config.paths.worktreesDir));
-		if (direct.startsWith(prefix + "/")) {
-			const withoutPrefix = direct.slice(prefix.length + 1);
-			const slash = withoutPrefix.indexOf("/");
-			return slash === -1 ? null : withoutPrefix.slice(slash + 1);
-		}
-		return direct;
-	}
+	if (direct !== null) return direct;
 
 	// Outside the main checkout: accept it only if it sits in another worktree
 	// of this same repository (Claude Code's `isolation: worktree` puts them
@@ -850,6 +840,13 @@ function hookPreToolUse(): never {
 	const config = loadConfig(root);
 	if (!config || config.enforcement === "off") passThrough();
 
+	// Commands can write in ways no parser will catch, so record the state of
+	// the working tree first; the PostToolUse hook compares against it.
+	if (payload.tool_name === "Bash" && payload.tool_use_id && payload.session_id) {
+		const before = snapshot(config.paths.repoRoot);
+		if (before) saveSnapshot(payload.session_id, payload.tool_use_id, before);
+	}
+
 	const targets = writeTargetsOf(payload, config);
 	// Nothing in this repository is being written.
 	if (targets.length === 0) passThrough();
@@ -903,6 +900,84 @@ function hookPreToolUse(): never {
 			(owner
 				? `It belongs to the ${owner.id} fief. Do not edit it. Finish your own part, then state exactly what you need from ${owner.id} — the orchestrator will route it.`
 				: `No fief owns it. Do not edit it. Report what you need and let the orchestrator decide where it belongs.`)
+	);
+}
+
+/**
+ * After a command runs, compare the working tree against the snapshot taken
+ * before it and report writes that landed outside the actor's territory.
+ *
+ * The tool has already run, so this cannot block. It does not revert either:
+ * the change may be wanted, and throwing away work to enforce a boundary is a
+ * worse failure than crossing one. It tells the agent, in its own turn, while
+ * undoing is still cheap.
+ */
+function hookPostToolUse(): never {
+	const payload = readHookPayload();
+	if (process.env.FIEFDOM_DISABLE) passThrough();
+	if (!payload.session_id || !payload.tool_use_id) passThrough();
+
+	const before = loadSnapshot(payload.session_id, payload.tool_use_id);
+	if (!before) passThrough();
+
+	const root = process.env.CLAUDE_PROJECT_DIR
+		? path.resolve(process.env.CLAUDE_PROJECT_DIR)
+		: findRepoRoot(payload.cwd ?? process.cwd());
+
+	const config = loadConfig(root);
+	if (!config || config.enforcement === "off") passThrough();
+
+	const after = snapshot(config.paths.repoRoot);
+	if (!after) passThrough();
+
+	const changed = changedPaths(before, after);
+	if (changed.length === 0) passThrough();
+
+	const fiefId = fiefIdFromAgent(payload.agent_type);
+	const fief = fiefId ? getFief(config, fiefId) : undefined;
+
+	// With no fief identity nothing in the repo was theirs to touch; a fief is
+	// judged against its own paths.
+	const allowed = (file: string) =>
+		fief
+			? pathMatchesFief(file, fief.paths) ||
+				(config.sharedPaths.length && pathMatchesFief(file, config.sharedPaths))
+			: false;
+
+	if (fief && config.enforcement === "orchestrator") passThrough();
+
+	const trespass = changed.filter((file) => !allowed(file) && !isFiefdomState(file, config));
+	if (trespass.length === 0) passThrough();
+
+	const who = fief ? `the ${fief.id} fief` : "the orchestrator";
+	const owners = trespass
+		.slice(0, 10)
+		.map((file) => {
+			const owner = findFiefForPath(file, config);
+			return `  ${file}${owner ? ` (belongs to ${owner.id})` : " (unowned)"}`;
+		})
+		.join("\n");
+
+	process.stdout.write(
+		JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: "PostToolUse",
+				additionalContext:
+					`Fiefdom: that command wrote outside ${who}:\n${owners}` +
+					(trespass.length > 10 ? `\n  ... and ${trespass.length - 10} more` : "") +
+					`\n\nThe write already happened — the guard could not see it in the command. ` +
+					`Undo it (git checkout / git clean / restore the previous content), then report what you ` +
+					`needed so it can be routed to the fief that owns it.`,
+			},
+		})
+	);
+	process.exit(0);
+}
+
+/** Fiefdom's own state is not part of anyone's territory. */
+function isFiefdomState(file: string, config: FiefdomConfig): boolean {
+	return (
+		file.startsWith(`${config.paths.stateDirName}/`) || file.startsWith(".claude/")
 	);
 }
 
@@ -973,7 +1048,6 @@ function cmdMigrate(args: Args): void {
 					persona: f.persona.replace(/^\.pi\//, `${FIEFDOM_DIR}/`),
 					memory: f.memory.replace(/^\.pi\//, `${FIEFDOM_DIR}/`),
 				})),
-				useWorktrees: config.useWorktrees,
 				enforcement: config.enforcement,
 				sharedPaths: config.sharedPaths,
 			}),
@@ -990,7 +1064,7 @@ function cmdMigrate(args: Args): void {
 
 const USAGE = `fiefdom — multi-agent workspace orchestration (Claude Code adapter)
 
-  fiefdom init [--worktrees] [--enforcement strict|orchestrator|off] [--force]
+  fiefdom init [--enforcement strict|orchestrator|off] [--force]
       Analyze the repo, write ${FIEFDOM_DIR}/fiefs.json and personas, then sync.
 
   fiefdom sync
@@ -1010,7 +1084,8 @@ const USAGE = `fiefdom — multi-agent workspace orchestration (Claude Code adap
   fiefdom log --from <fief> --to <fief> --message "..."
   fiefdom log show [--limit 50]
 
-  fiefdom hook pre-tool-use | session-start     (invoked by Claude Code)
+  fiefdom hook pre-tool-use | post-tool-use | session-start   (invoked by
+                                                Claude Code)
 
 Config lives in ${FIEFDOM_DIR}/fiefs.json and is shared with the Pi extension:
 the same repo works with either agent.`;
@@ -1041,6 +1116,7 @@ export async function run(argv: string[]): Promise<void> {
 		case "hook": {
 			const event = args._[1];
 			if (event === "pre-tool-use") hookPreToolUse();
+			if (event === "post-tool-use") hookPostToolUse();
 			if (event === "session-start") hookSessionStart();
 			// Unknown hook events must never block anything.
 			process.exit(0);
