@@ -167,7 +167,7 @@ them to `.fiefdom/`.
 | Field | Meaning |
 |---|---|
 | `role` | `fief` (default) or `wita` — see below |
-| `paths` | globs the fief may write; counsel has none |
+| `paths` | globs the fief may write; a wita has none |
 | `persona` | system prompt; edit this, not the generated agent file |
 | `description` | used as the subagent's `description` (how Claude decides to delegate) |
 | `enforcement` | `strict` (default): only fiefs write, only inside their paths · `orchestrator`: only the orchestrator is blocked · `off` |
