@@ -16,16 +16,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 export interface Snapshot {
-	/** repo-relative path -> "<git status code>:<size>:<mtime ns>" */
+	/** When the snapshot was taken; anything written later has a newer mtime */
+	time: number;
+	/** repo-relative path -> "<size>:<mtime>", or "missing" */
 	entries: Record<string, string>;
 }
 
+const MISSING = "missing";
+
 /**
- * State of everything git considers dirty: modified, added, untracked.
+ * The state on disk of everything git considers dirty.
  *
- * Status alone is not enough — a file already modified before the command and
- * modified again during it keeps the same status — so each entry also carries
- * size and mtime.
+ * Deliberately records size and mtime and *not* the git status code. Staging
+ * and committing change a file's status while leaving its content untouched,
+ * and reporting those as writes is worse than useless: it accuses an agent of
+ * a boundary crossing for `git add`, and any advice to undo it endangers real
+ * work.
  */
 export function snapshot(repoRoot: string): Snapshot | null {
 	let porcelain: string;
@@ -40,6 +46,7 @@ export function snapshot(repoRoot: string): Snapshot | null {
 		return null;
 	}
 
+	const time = Date.now();
 	const entries: Record<string, string> = {};
 
 	// Porcelain -z records are "XY <path>\0", with renames adding a second path.
@@ -53,31 +60,51 @@ export function snapshot(repoRoot: string): Snapshot | null {
 		// A rename record is followed by its source path; skip it.
 		if (code[0] === "R" || code[1] === "R") i++;
 
-		let stamp = "missing";
-		try {
-			const stat = fs.statSync(path.join(repoRoot, file));
-			stamp = `${stat.size}:${stat.mtimeMs}`;
-		} catch {
-			// Deleted between status and stat.
-		}
-		entries[file] = `${code}:${stamp}`;
+		entries[file] = stampOf(repoRoot, file);
 	}
 
-	return { entries };
+	return { time, entries };
 }
 
-/** Paths that appeared or changed between two snapshots. */
-export function changedPaths(before: Snapshot, after: Snapshot): string[] {
-	const changed: string[] = [];
-
-	for (const [file, state] of Object.entries(after.entries)) {
-		if (before.entries[file] !== state) changed.push(file);
+function stampOf(repoRoot: string, file: string): string {
+	try {
+		const stat = fs.statSync(path.join(repoRoot, file));
+		return `${stat.size}:${stat.mtimeMs}`;
+	} catch {
+		return MISSING;
 	}
+}
 
-	// A file that was dirty and is now clean changed too (reverted, committed,
-	// deleted) — worth reporting when it belongs to someone else.
-	for (const file of Object.keys(before.entries)) {
-		if (!(file in after.entries)) changed.push(file);
+/**
+ * Files whose *content* changed while the command ran.
+ *
+ * A file counts as written when it was there before and is gone now, or when
+ * its mtime is at or after the moment the first snapshot was taken. Everything
+ * else — restaging, committing, a file merely entering or leaving git's dirty
+ * set — leaves the bytes on disk alone and is not reported.
+ */
+export function changedPaths(
+	before: Snapshot,
+	after: Snapshot,
+	repoRoot: string
+): string[] {
+	const changed: string[] = [];
+	const candidates = new Set([
+		...Object.keys(before.entries),
+		...Object.keys(after.entries),
+	]);
+
+	for (const file of candidates) {
+		const wasThere = before.entries[file] && before.entries[file] !== MISSING;
+		const now = after.entries[file] ?? stampOf(repoRoot, file);
+
+		if (now === MISSING) {
+			if (wasThere) changed.push(file); // deleted during the command
+			continue;
+		}
+
+		const mtime = Number(now.split(":")[1]);
+		if (Number.isFinite(mtime) && mtime >= before.time) changed.push(file);
 	}
 
 	return changed.sort();

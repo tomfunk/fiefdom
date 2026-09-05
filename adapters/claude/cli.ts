@@ -930,7 +930,7 @@ function hookPostToolUse(): never {
 	const after = snapshot(config.paths.repoRoot);
 	if (!after) passThrough();
 
-	const changed = changedPaths(before, after);
+	const changed = changedPaths(before, after, config.paths.repoRoot);
 	if (changed.length === 0) passThrough();
 
 	const fiefId = fiefIdFromAgent(payload.agent_type);
@@ -963,11 +963,15 @@ function hookPostToolUse(): never {
 			hookSpecificOutput: {
 				hookEventName: "PostToolUse",
 				additionalContext:
-					`Fiefdom: that command wrote outside ${who}:\n${owners}` +
+					`Fiefdom: this command changed files outside ${who}:\n${owners}` +
 					(trespass.length > 10 ? `\n  ... and ${trespass.length - 10} more` : "") +
-					`\n\nThe write already happened — the guard could not see it in the command. ` +
-					`Undo it (git checkout / git clean / restore the previous content), then report what you ` +
-					`needed so it can be routed to the fief that owns it.`,
+					`\n\nThis is a notice, not an instruction to undo anything. The write has ` +
+					`already happened, and it may well be correct — a command run on someone ` +
+					`else's behalf looks exactly like a boundary crossing from here.\n\n` +
+					`Judge it yourself: if you changed those files by mistake, restore just ` +
+					`those paths and say so. If the change was wanted, keep it and note which ` +
+					`fief's territory it touched, so the division can be revisited. Never run a ` +
+					`blanket revert on this notice — it will destroy work that was meant to be there.`,
 			},
 		})
 	);

@@ -29,7 +29,8 @@ function isUnresolvable(token: string): boolean {
 		/[$`*?~\[\]{}]/.test(token) || // expansion or globbing
 		token.startsWith("-") ||
 		token === "/dev/null" ||
-		token.startsWith("/dev/")
+		token.startsWith("/dev/") ||
+		token.includes(MASK)
 	);
 }
 
@@ -57,8 +58,47 @@ function add(
 }
 
 /**
+ * Drop heredoc bodies, keeping the line that opens them.
+ *
+ * The opening line carries the real target (`cat > file <<'EOF'`); the body is
+ * content, and content routinely contains things that look like shell syntax —
+ * an arrow function is `=>`, prose says "App > digit-nav sweep".
+ */
+function stripHeredocBodies(command: string): string {
+	const lines = command.split("\n");
+	const kept: string[] = [];
+	let terminator: string | null = null;
+
+	for (const line of lines) {
+		if (terminator !== null) {
+			if (line.trim() === terminator) terminator = null;
+			continue;
+		}
+
+		kept.push(line);
+
+		const open = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+		if (open) terminator = open[2];
+	}
+
+	return kept.join("\n");
+}
+
+const MASK = "__fiefdom_quoted__";
+
+/**
+ * Replace quoted spans with a placeholder, so quoting hides shell syntax the
+ * way the shell does. `--body "App > digit-nav sweep"` must not read as a
+ * redirection to a file called `digit-nav`.
+ */
+function maskQuoted(text: string): string {
+	return text.replace(/'[^']*'|"[^"]*"/g, MASK);
+}
+
+/**
  * Split a command line into its individual commands, so `cd x && sed -i ...`
- * is examined piece by piece.
+ * is examined piece by piece. Quoting is masked first, so a `;` inside a commit
+ * message does not split anything.
  */
 function segments(command: string): string[] {
 	return command.split(/\|\||&&|;|\n|\|/g).map((s) => s.trim()).filter(Boolean);
@@ -71,7 +111,17 @@ export function extractWriteTargets(command: string): WriteTarget[] {
 	// after it means something different. Track it rather than misjudging.
 	let cwd = "";
 
-	for (const segment of segments(command)) {
+	const withoutHeredocs = stripHeredocBodies(command);
+
+	// A quoted redirection target is still a target: `> "my file.txt"`. Collect
+	// those before quoting is masked away.
+	for (const match of withoutHeredocs.matchAll(
+		/(?<![&=\d])\d?>>?\s*(?:'([^']*)'|"([^"]*)")/g
+	)) {
+		add(targets, match[1] ?? match[2], "shell redirection", "");
+	}
+
+	for (const segment of segments(maskQuoted(withoutHeredocs))) {
 		const cd = segment.match(/^cd\s+(\S+)\s*$/);
 		if (cd) {
 			const dir = unquote(cd[1]);
@@ -81,8 +131,10 @@ export function extractWriteTargets(command: string): WriteTarget[] {
 			continue;
 		}
 
-		// Redirection: `> file`, `>> file`. Excludes `2>`, `>&2`, `<`.
-		for (const match of segment.matchAll(/(?<![0-9&])>>?\s*([^\s|&;<>]+)/g)) {
+		// Redirection: `> file`, `>> file`, and `2> file` — a stderr redirect
+		// creates a file just like any other. Excludes fd duplication (`2>&1`,
+		// `>&2`) and the `=>` of an arrow function.
+		for (const match of segment.matchAll(/(?<![&=\d])\d?>>?\s*(?!&)([^\s|&;<>]+)/g)) {
 			add(targets, match[1], "shell redirection", cwd);
 		}
 

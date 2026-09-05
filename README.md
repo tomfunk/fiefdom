@@ -246,9 +246,15 @@ Fiefdom: that command wrote outside the frontend fief:
   backend/generated.py (belongs to backend)
 ```
 
-It reports rather than reverts — the change may be wanted, and destroying work
-to enforce a boundary is a worse failure than crossing one — but it arrives in
-the agent's own turn, while undoing is still one command.
+It compares content, not git status: staging and committing move a file
+between states without touching a byte of it, and reporting those as writes
+would accuse an agent of a boundary crossing for running `git add`. A file
+counts as written only when it is gone, or when its mtime moved during the
+command.
+
+It reports rather than reverts, and says so explicitly — the change may have
+been made on someone's behalf, and a blanket revert on a notice like this
+destroys work. It arrives in the agent's own turn, while judging it is cheap.
 
 Together: nothing gets through unnoticed, and the common cases never happen at
 all. What this is *not* is a sandbox. It is built for an agent that respects
