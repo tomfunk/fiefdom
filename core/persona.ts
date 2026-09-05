@@ -30,7 +30,8 @@ Other fiefs own the rest of the repository:
 ${others || "- (no other fiefs)"}
 
 If a change needs to happen outside your paths, do **not** edit it and do not
-work around the boundary. Finish what you can inside your territory and end
+work around the boundary — including through the shell, which is guarded the
+same way as the file tools. Finish what you can inside your territory and end
 your report with a clear request: which fief you need something from, and the
 exact contract you need (signature, route, payload shape). The orchestrator
 routes it.

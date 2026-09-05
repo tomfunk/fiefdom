@@ -32,26 +32,56 @@ under Claude Code too.
 
 ## Install
 
-```bash
-git clone https://github.com/tomfunk/fiefdom
-cd fiefdom
-npm install
-```
-
-Requires Node 22.18+ (the CLI runs TypeScript directly) or Bun.
-
-Optionally put the CLI on your PATH:
+Fiefdom runs from a checkout — there is no build step, and both harnesses point
+at the same one.
 
 ```bash
-npm link          # provides `fiefdom`
+git clone https://github.com/tomfunk/fiefdom ~/projects/fiefdom
+cd ~/projects/fiefdom
+npm install                 # minimatch, the only runtime dependency
 ```
 
-For Pi, point the extension at this checkout:
+Requires Node 22.18+ (which runs TypeScript directly) or Bun.
+
+**Keep the checkout where it is.** Generated hooks and personas reference it by
+absolute path, so moving or deleting it breaks every repo you have set up. If
+you do move it, re-run `fiefdom sync` in those repos.
+
+### Claude Code
+
+Nothing to install globally: `fiefdom init` writes everything a repo needs into
+that repo. Optionally put the CLI on your PATH so you can type `fiefdom`
+instead of the full node invocation:
+
+```bash
+npm link                    # provides `fiefdom`
+```
+
+Without it, generated files call a shim at `<repo>/.fiefdom/bin/fiefdom`, which
+works the same way.
+
+### Pi
+
+Pi loads extensions from `~/.pi/agent/extensions/`, so symlink the checkout in
+(the directory usually does not exist yet):
 
 ```bash
 mkdir -p ~/.pi/agent/extensions
-ln -s "$PWD" ~/.pi/agent/extensions/fiefdom
+ln -s ~/projects/fiefdom ~/.pi/agent/extensions/fiefdom
 ```
+
+`package.json` points Pi at `adapters/pi/index.ts`; nothing else is needed.
+
+### Check it worked
+
+```bash
+cd ~/some/git/repo
+fiefdom analyze             # proposes a division, writes nothing
+```
+
+For Pi, start a session in a git repo with no fiefs configured — the status
+line should read `Fiefdom: Not configured. Use /fiefdom-setup to divide this
+repo.` If it says nothing at all, the symlink is not being picked up.
 
 ## Quick start — Claude Code
 
@@ -204,10 +234,18 @@ Two layers, and it is worth being precise about what each catches:
    The guard understands both fiefdom's worktrees and the ones Claude Code
    creates for `isolation: worktree`.
 
-What this does *not* catch: writes performed through the shell. `sed -i`,
-`> file` and friends go through `Bash`, which the guard deliberately does not
-police — matching on command text is guesswork, and false denials are worse
-than the leak. Turn on `useWorktrees` if you need shell writes contained too.
+The guard reads `Bash` as well as the file tools, because an agent working
+through the shell edits with `sed -i` and heredocs rather than `Write`. It
+extracts the paths a command clearly writes — redirections, `tee`, in-place
+`sed`/`perl`, `cp`/`mv` destinations, `rm`, `touch`, `dd of=`, `patch` — and
+applies the same ownership rule, following a leading `cd` so relative paths
+mean what they say.
+
+It only judges what it can read unambiguously. A path built from a variable, a
+glob, or a write buried inside `python -c` is allowed through: a missed write
+is a boundary the agent is trusted to respect anyway, while a false denial
+blocks a build or a test run. `useWorktrees` is the answer if you want
+containment that does not depend on reading commands.
 
 Escape hatches: `FIEFDOM_DISABLE=1`, `"enforcement": "off"`, or a session in
 `bypassPermissions` mode.

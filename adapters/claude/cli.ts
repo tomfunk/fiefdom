@@ -40,6 +40,7 @@ import { ensureGitignore, gitIgnoredNames } from "../../core/gitignore.ts";
 import { analyzeRepository, generateConfigFromAnalysis } from "../../core/analyze.ts";
 import { computeCoverage, groupByTopLevel } from "../../core/coverage.ts";
 import { computeCoChange } from "../../core/cochange.ts";
+import { extractWriteTargets } from "../../core/bashwrites.ts";
 import {
 	agentName,
 	agentFile,
@@ -804,6 +805,39 @@ function repoRelativeForActor(
 	return toRepoRelative(absolute, outsideRoot);
 }
 
+/**
+ * Everything this tool call would write, as repo-relative paths.
+ *
+ * File tools state their target outright. Bash has to be read: an agent
+ * working through the shell edits with `sed -i` and heredocs, and those writes
+ * are as real as any Write call.
+ */
+function writeTargetsOf(
+	payload: HookPayload,
+	config: FiefdomConfig
+): Array<{ relative: string; reason: string }> {
+	const raw: Array<{ path: string; reason: string; cwd?: string }> = [];
+
+	if (payload.tool_name === "Bash") {
+		const command = payload.tool_input?.command;
+		if (typeof command === "string") {
+			raw.push(...extractWriteTargets(command));
+		}
+	} else {
+		const target = targetPathOf(payload.tool_input);
+		if (target) raw.push({ path: target, reason: payload.tool_name ?? "write" });
+	}
+
+	const resolved: Array<{ relative: string; reason: string }> = [];
+	for (const { path: target, reason, cwd } of raw) {
+		const base = cwd ? path.resolve(payload.cwd ?? config.paths.repoRoot, cwd) : payload.cwd;
+		const relative = repoRelativeForActor(target, config, base);
+		// Anything outside this repository is none of fiefdom's business.
+		if (relative !== null) resolved.push({ relative, reason });
+	}
+	return resolved;
+}
+
 function hookPreToolUse(): never {
 	const payload = readHookPayload();
 	if (process.env.FIEFDOM_DISABLE) passThrough();
@@ -816,16 +850,20 @@ function hookPreToolUse(): never {
 	const config = loadConfig(root);
 	if (!config || config.enforcement === "off") passThrough();
 
+	const targets = writeTargetsOf(payload, config);
+	// Nothing in this repository is being written.
+	if (targets.length === 0) passThrough();
+
 	const fiefId = fiefIdFromAgent(payload.agent_type);
+	const viaShell = payload.tool_name === "Bash";
 
 	// No fief identity: the orchestrator itself, or some other subagent.
 	if (!fiefId) {
 		const roster = config.fiefs
 			.map((f) => `  ${agentName(f.id)} -> ${f.paths.join(", ")}`)
 			.join("\n");
-		const target = targetPathOf(payload.tool_input);
-		const relative = target ? toRepoRelative(target, root, payload.cwd) : null;
-		const owner = relative ? findFiefForPath(relative, config) : null;
+		const { relative, reason } = targets[0];
+		const owner = findFiefForPath(relative, config);
 
 		const actor = payload.agent_type
 			? `Fiefdom: "${payload.agent_type}" is not a fief, and only fief agents write in this repo.\n`
@@ -833,11 +871,10 @@ function hookPreToolUse(): never {
 
 		deny(
 			actor +
+				(viaShell ? `That command writes ${relative} (${reason}).\n` : "") +
 				(owner
 					? `${relative} belongs to the ${owner.id} fief — delegate with the Agent tool (subagent_type: "${agentName(owner.id)}"), or SendMessage if that fief is already running.\n`
-					: relative
-						? `${relative} is not owned by any fief. Ask the user whether to widen a fief's paths or add it to sharedPaths in ${config.paths.stateDirName}/fiefs.json.\n`
-						: "") +
+					: `${relative} is not owned by any fief. Ask the user whether to widen a fief's paths or add it to sharedPaths in ${config.paths.stateDirName}/fiefs.json.\n`) +
 				`Fiefs:\n${roster}`
 		);
 	}
@@ -851,21 +888,18 @@ function hookPreToolUse(): never {
 
 	if (config.enforcement === "orchestrator") passThrough();
 
-	const target = targetPathOf(payload.tool_input);
-	if (!target) passThrough();
+	const trespass = targets.find(
+		({ relative }) =>
+			!pathMatchesFief(relative, fief.paths) &&
+			!(config.sharedPaths.length && pathMatchesFief(relative, config.sharedPaths))
+	);
+	if (!trespass) passThrough();
 
-	const relative = repoRelativeForActor(target, config, payload.cwd);
-	// Files outside the repository are none of fiefdom's business.
-	if (relative === null) passThrough();
-
-	if (pathMatchesFief(relative, fief.paths)) passThrough();
-	if (config.sharedPaths.length && pathMatchesFief(relative, config.sharedPaths)) {
-		passThrough();
-	}
-
+	const { relative, reason } = trespass;
 	const owner = findFiefForPath(relative, config);
 	deny(
 		`Fiefdom: ${relative} is outside the ${fief.id} fief (${fief.paths.join(", ")}).\n` +
+			(viaShell ? `That command writes it (${reason}); the shell is not a way around the boundary.\n` : "") +
 			(owner
 				? `It belongs to the ${owner.id} fief. Do not edit it. Finish your own part, then state exactly what you need from ${owner.id} — the orchestrator will route it.`
 				: `No fief owns it. Do not edit it. Report what you need and let the orchestrator decide where it belongs.`)

@@ -95,6 +95,8 @@ ${table}
   work, then reconcile the contracts yourself and hand each fief a task that
   already names the agreed interface.
 - Cross-fief requests are worth recording: \`${bin} log --from <fief> --to <fief> --message "..."\`.
+- The guard covers the shell too: a \`sed -i\`, a heredoc or a \`>\` redirection
+  into a file you do not own is denied the same way an Edit is.
 - Paths no fief owns are writable by nobody. That is usually worth surfacing to
   the user rather than routing around: an unownable file is a hint that the code
   sits on a blurry boundary. Widening a fief or adding to \`sharedPaths\` in
@@ -192,7 +194,7 @@ export function hookEntries(bin: string): Record<string, unknown[]> {
 	return {
 		PreToolUse: [
 			{
-				matcher: "Write|Edit|MultiEdit|NotebookEdit",
+				matcher: "Write|Edit|MultiEdit|NotebookEdit|Bash",
 				hooks: [
 					{
 						type: "command",
