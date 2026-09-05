@@ -43,6 +43,13 @@ In Claude Code these are subagents (`.claude/agents/vassal-*.md`) with a
 `PreToolUse` hook enforcing the boundaries. In Pi they are persistent RPC
 worker processes enforcing the same rule in-process.
 
+**What differs between the harnesses.** Config, personas, memory and the land
+boundaries are identical. Serfs and grants are Claude Code only, because Pi has
+no way for a worker to spawn a helper — so a Pi holder is told plainly that it
+works alone, rather than being given instructions it cannot act on. Write
+detection after the fact (the `PostToolUse` snapshot) is likewise Claude Code
+only; Pi enforces in-process at the tool call instead.
+
 ## Install
 
 Fiefdom runs from a checkout — there is no build step, and both harnesses point

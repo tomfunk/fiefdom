@@ -13,12 +13,27 @@
 
 import type { FiefConfig, FiefdomConfig } from "./config.ts";
 
+/**
+ * What the surrounding harness can actually do.
+ *
+ * The instructions are shared, so they must not promise a mechanism the
+ * harness lacks: telling a Pi worker to put serfs on its land, when Pi has no
+ * way to spawn one, is worse than saying nothing at all.
+ */
+export interface HarnessCapabilities {
+	/** Can this holder put serfs on parts of its own land? */
+	delegation: boolean;
+}
+
+const FULL: HarnessCapabilities = { delegation: true };
+
 export function fiefInstructions(
 	fief: FiefConfig,
 	config: FiefdomConfig,
-	bin: string
+	bin: string,
+	capabilities: HarnessCapabilities = FULL
 ): string {
-	return holderInstructions(fief, config, bin);
+	return holderInstructions(fief, config, bin, capabilities);
 }
 
 /** A serf: bound to its holder's land, for one task, keeping nothing. */
@@ -36,15 +51,10 @@ ${fief.paths.map((p) => `- ${p}`).join("\n")}
 ${shared}
 **If your instructions name a grant, claim it before you do anything else.**
 A grant carves an ephemeral sub-fief out of your holder's land — the files this
-task is actually about — and binds you to those alone:
-
-\`\`\`bash
-<the claim command your holder gave you>
-\`\`\`
-
-It prints back exactly what you may write. Working outside it is refused even
-when the file is otherwise ${fief.id} land, because your holder cut the task
-that way on purpose: other serfs may be working the rest of it right now.
+task is actually about — and binds you to those alone. It prints back exactly
+what you may write. Working outside it is refused even when the file is
+otherwise ${fief.id} land, because your holder cut the task that way on
+purpose: other serfs may be working the rest of it right now.
 
 Nothing outside your ground is yours to touch — the guard refuses it, and
 routing anything wider is the liege's business, not yours.
@@ -73,7 +83,8 @@ Work alone. You do not put other agents on your task.`;
 function holderInstructions(
 	fief: FiefConfig,
 	config: FiefdomConfig,
-	bin: string
+	bin: string,
+	capabilities: HarnessCapabilities
 ): string {
 	const isBaron = fief.role === "baron";
 
@@ -106,6 +117,27 @@ them, and what they should leave alone on your side.\n`
 		fief.paths.map((p) => `- ${p}`).join("\n") ||
 		"- (none — you hold no land, so you advise rather than write)";
 
+	const delegation = capabilities.delegation
+		? serfGuidance(fief, bin)
+		: `## Working alone
+
+This harness gives you no way to put helpers on parts of your land, so the work
+is yours to do directly. If a task is too large to hold at once, say so in your
+report rather than half-finishing it — the liege can split it across turns, and
+knowing where you stopped is worth more than a half-made change.`;
+
+	const serfMemoryNote = capabilities.delegation
+		? " Record what your serfs found too; they keep nothing."
+		: "";
+
+	const practiceSplitting = capabilities.delegation
+		? `- which parts split cleanly across serfs, and which look separable but are not
+  ("the rules files took three serfs well; splitting sync was a mistake, those
+  two files move together")
+- how a slice you granted turned out — too wide, too narrow, about right`
+		: `- which parts of this land are separable and which move together, so a large
+  change can be planned in pieces`;
+
 	return `## Your land
 
 ${standing}
@@ -120,7 +152,44 @@ same way as the file tools. Finish what you can on your own land and end your
 report with a clear request: whose land you need, and the exact contract you
 need there (signature, route, payload shape). The liege routes it.
 
-## Putting serfs to work
+${delegation}
+
+## Memory
+
+Your learnings persist across sessions in \`${fief.memory}\`, and are shared
+with the other harness — what you learn here is available to the same holder
+running under Pi, and vice versa.
+
+At the start of a task, load what you already know:
+
+\`\`\`bash
+${bin} memory show --fief ${fief.id}
+\`\`\`
+
+Before you finish, save anything genuinely worth knowing next time: an
+architectural decision and its reason, a convention you had to discover, a
+gotcha that cost you time. Skip it when there is nothing durable — noise is
+worse than silence.${serfMemoryNote}
+
+Record **practice** as well as knowledge — how the work goes on this land, not
+just what the code is. That is what makes you better at running it:
+
+${practiceSplitting}
+- what always ripples outside your land, so you can raise it while planning
+  rather than discovering it mid-task
+- how long a kind of change actually takes here
+
+\`\`\`bash
+${bin} memory add --fief ${fief.id} --json '{"decisions":["..."],"conventions":["..."],"practice":["..."],"issues":["..."],"notes":["..."]}'
+\`\`\`
+
+Use only those five categories, one short sentence each, and omit the empty
+ones.`;
+}
+
+/** The delegation section, for harnesses that can actually spawn a serf. */
+function serfGuidance(fief: FiefConfig, bin: string): string {
+	return `## Putting serfs to work
 
 Most tasks you simply do. But when one genuinely splits — a mechanical change
 across many files, two independent pieces — you can subinfeudate: carve part of
@@ -147,43 +216,5 @@ disjoint files, it is one job: do it yourself.
 You keep the whole picture — the serfs each see one part, so reconciling their
 reports and recording what was learned is yours. And never spawn another
 holder's agents: routing across fiefs is the liege's job, and going around it
-is how boundaries rot.
-
-## Memory
-
-Your learnings persist across sessions in \`${fief.memory}\`, and are shared
-with the other harness — what you learn here is available to the same holder
-running under Pi, and vice versa.
-
-At the start of a task, load what you already know:
-
-\`\`\`bash
-${bin} memory show --fief ${fief.id}
-\`\`\`
-
-Before you finish, save anything genuinely worth knowing next time: an
-architectural decision and its reason, a convention you had to discover, a
-gotcha that cost you time. Skip it when there is nothing durable — noise is
-worse than silence. Record what your serfs found too; they keep nothing.
-
-Record **practice** as well as knowledge — how the work goes on this land, not
-just what the code is. That is what makes you better at running it:
-
-- which parts split cleanly across serfs, and which look separable but are not
-  ("the rules files took three serfs well; splitting sync was a mistake, those
-  two files move together")
-- how a slice you granted turned out — too wide, too narrow, about right
-- what always ripples outside your land, so you can raise it while planning
-  rather than discovering it mid-task
-- how long a kind of change actually takes here
-
-A serf will often tell you this in its report; it keeps nothing, so if you do
-not write it down it is lost.
-
-\`\`\`bash
-${bin} memory add --fief ${fief.id} --json '{"decisions":["..."],"conventions":["..."],"practice":["..."],"issues":["..."],"notes":["..."]}'
-\`\`\`
-
-Use only those five categories, one short sentence each, and omit the empty
-ones.`;
+is how boundaries rot.`;
 }

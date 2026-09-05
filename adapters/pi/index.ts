@@ -140,7 +140,7 @@ export default function fiefdom(pi: ExtensionAPI) {
 			try {
 				const agent = await spawnFiefAgent(ctx, fief);
 				state.agents.set(fief.id, agent);
-				ctx.ui.notify(`Fiefdom: Spawned agent for ${fief.id}`, "info");
+				ctx.ui.notify(`Fiefdom: ${fief.role === "baron" ? "baron" : "vassal"} for ${fief.id} is holding`, "info");
 			} catch (err) {
 				ctx.ui.notify(`Fiefdom: Failed to spawn ${fief.id}: ${err}`, "error");
 			}
@@ -156,7 +156,7 @@ export default function fiefdom(pi: ExtensionAPI) {
 		state.initialized = true;
 		ctx.ui.setStatus(
 			"fiefdom",
-			`Fiefdom: ${state.agents.size} agents active` +
+			`Fiefdom: ${state.agents.size} holders active` +
 				(config.paths.inherited ? " (config inherited from main checkout)" : "")
 		);
 	});
@@ -208,7 +208,7 @@ export default function fiefdom(pi: ExtensionAPI) {
 		if (targetPath) {
 			return {
 				block: true,
-				reason: `Orchestrator cannot write files. Route this task to the appropriate fief agent.`,
+				reason: `The liege does not work the land. Grant this task to the holder of the files it touches.`,
 			};
 		}
 	});
@@ -862,7 +862,10 @@ async function spawnFiefAgent(
 		// you started in. Fiefdom does not make checkouts of its own.
 		cwd: ctx.cwd,
 		persona,
-		instructions: fiefInstructions(fief, config, resolveBin(config.paths.stateDir)),
+		// Pi has no serfs: a worker cannot spawn one, so it must not be told to.
+		instructions: fiefInstructions(fief, config, resolveBin(config.paths.stateDir), {
+			delegation: false,
+		}),
 		memoryContext,
 	});
 
