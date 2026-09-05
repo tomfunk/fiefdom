@@ -37,7 +37,7 @@ import {
 	getMainWorktreePath,
 	resolvePaths,
 } from "../../core/paths.ts";
-import { resolveBin } from "../../core/bin.ts";
+import { PACKAGE_ROOT as PACKAGE_ROOT_DIR, resolveBin } from "../../core/bin.ts";
 import { ensureGitignore, gitIgnoredNames } from "../../core/gitignore.ts";
 import { analyzeRepository, generateConfigFromAnalysis } from "../../core/analyze.ts";
 import { computeCoverage, groupByTopLevel } from "../../core/coverage.ts";
@@ -247,18 +247,26 @@ async function cmdSync(args: Args): Promise<void> {
 		}
 	}
 
-	for (const [name, content] of commandFiles(bin, config.paths.stateDirName)) {
-		fs.writeFileSync(path.join(commandsDir, name), content, "utf-8");
+	// When fiefdom is installed as a plugin it already supplies the hooks and
+	// the slash commands; only the agents are repo-specific and still need
+	// generating. Writing them again would mean two copies to keep in step.
+	const asPlugin = Boolean(process.env.CLAUDE_PLUGIN_ROOT) || args.flags.plugin === true;
+
+	if (!asPlugin) {
+		for (const [name, content] of commandFiles(bin, config.paths.stateDirName)) {
+			fs.writeFileSync(path.join(commandsDir, name), content, "utf-8");
+		}
+
+		// Hooks can use the project-dir placeholder, so settings survive the repo
+		// being moved or cloned to a different path.
+		writeHooks(
+			root,
+			bin.startsWith(root + path.sep)
+				? "${CLAUDE_PROJECT_DIR}" + bin.slice(root.length)
+				: bin
+		);
 	}
 
-	// Hooks can use the project-dir placeholder, so settings survive the repo
-	// being moved or cloned to a different path.
-	writeHooks(
-		root,
-		bin.startsWith(root + path.sep)
-			? "${CLAUDE_PROJECT_DIR}" + bin.slice(root.length)
-			: bin
-	);
 	ensureGitignore(root, config.paths.stateDirName);
 
 	console.log(
@@ -271,7 +279,10 @@ async function cmdSync(args: Args): Promise<void> {
 						: `  ${agentName(f)} -> no land (advises)`
 				)
 				.join("\n") +
-			`\n\nRestart the session (or /reload) to pick up new agents and hooks.`
+			(asPlugin
+				? `\n\nHooks and commands come from the fiefdom plugin; only the agents are ` +
+					`written per repo.\nRestart the session (or /reload) to pick up new agents.`
+				: `\n\nRestart the session (or /reload) to pick up new agents and hooks.`)
 	);
 }
 
@@ -772,6 +783,51 @@ function cmdLog(args: Args): void {
 }
 
 // ---------------------------------------------------------------------------
+// plugin packaging
+// ---------------------------------------------------------------------------
+
+/**
+ * Regenerate the committed plugin artefacts — `hooks/hooks.json` and
+ * `commands/` — from the same generators that write a standalone repo's files.
+ *
+ * They are committed rather than generated at install time because a plugin is
+ * a static directory, but they must not drift from the standalone path, so
+ * there is one source of truth and this command re-emits it.
+ */
+function cmdBuildPlugin(args: Args): void {
+	const root = flagString(args, "root") ?? PACKAGE_ROOT_DIR;
+
+	// Inside a plugin the CLI is on PATH, so the generated files can simply
+	// say `fiefdom` instead of an absolute path into somebody's checkout.
+	const bin = "fiefdom";
+
+	const hooksDir = path.join(root, "hooks");
+	const commandsDir = path.join(root, "commands");
+	fs.mkdirSync(hooksDir, { recursive: true });
+	fs.mkdirSync(commandsDir, { recursive: true });
+
+	const pluginBin = "${CLAUDE_PLUGIN_ROOT}/bin/fiefdom";
+	fs.writeFileSync(
+		path.join(hooksDir, "hooks.json"),
+		JSON.stringify({ hooks: hookEntries(pluginBin) }, null, 2) + "\n",
+		"utf-8"
+	);
+
+	// Plugin commands are namespaced (/fiefdom:plan), so the redundant prefix
+	// comes off the filenames — and the bare one becomes /fiefdom:status.
+	for (const [name, content] of commandFiles(bin, FIEFDOM_DIR)) {
+		const bare = name === "fiefdom.md" ? "status.md" : name.replace(/^fiefdom-/, "");
+		fs.writeFileSync(path.join(commandsDir, bare), content, "utf-8");
+	}
+
+	console.log(`Rebuilt plugin artefacts in ${root}:`);
+	console.log("  hooks/hooks.json");
+	for (const entry of fs.readdirSync(commandsDir).sort()) {
+		console.log(`  commands/${entry}`);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // grants (subinfeudation)
 // ---------------------------------------------------------------------------
 
@@ -1238,9 +1294,10 @@ const USAGE = `fiefdom — multi-agent workspace orchestration (Claude Code adap
   fiefdom init [--enforcement strict|orchestrator|off] [--force]
       Analyze the repo, write ${FIEFDOM_DIR}/fiefs.json and personas, then sync.
 
-  fiefdom sync
-      Regenerate .claude/agents/fief-*.md, /fiefdom commands and hooks from
-      the config. Run after editing fiefs.json or a persona.
+  fiefdom sync [--plugin]
+      Regenerate the per-repo agents from the config. Run after editing
+      fiefs.json or a persona. Also writes the hooks and slash commands
+      unless fiefdom is installed as a plugin, which already supplies them.
 
   fiefdom status [--json]      Fiefs, ownership, learning counts, gaps
   fiefdom review               Boundary review with suggestions
@@ -1291,6 +1348,8 @@ export async function run(argv: string[]): Promise<void> {
 			return cmdGrant(args);
 		case "claim":
 			return cmdClaim(args);
+		case "build-plugin":
+			return cmdBuildPlugin(args);
 		case "migrate":
 			return cmdMigrate(args);
 		case "hook": {

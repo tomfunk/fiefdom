@@ -52,45 +52,68 @@ only; Pi enforces in-process at the tool call instead.
 
 ## Install
 
-Fiefdom runs from a checkout — there is no build step, and both harnesses point
-at the same one.
+One repository, one checkout, two ways in. `core/` — config, memory, the land
+boundaries, the persona text — is shared; each harness gets a thin adapter over
+it, so a fix to the guard or a new memory category lands in both at once.
+
+```
+core/              harness-agnostic: config, paths, memory, coverage, personas
+adapters/claude/   the Claude Code adapter: CLI, generators, hooks
+adapters/pi/       the Pi extension: RPC workers
+bin/fiefdom        the CLI both of them shell out to
+.claude-plugin/    manifest that makes this repo a Claude Code plugin
+hooks/, commands/  the plugin's own hooks and slash commands
+```
 
 ```bash
 git clone https://github.com/tomfunk/fiefdom ~/projects/fiefdom
-cd ~/projects/fiefdom
-npm install                 # minimatch, the only runtime dependency
+cd ~/projects/fiefdom && npm install
 ```
 
 Requires Node 22.18+ (which runs TypeScript directly) or Bun.
 
-**Keep the checkout where it is.** Generated hooks and personas reference it by
-absolute path, so moving or deleting it breaks every repo you have set up. If
-you do move it, re-run `fiefdom sync` in those repos.
-
-### Claude Code
-
-Nothing to install globally: `fiefdom init` writes everything a repo needs into
-that repo. Optionally put the CLI on your PATH so you can type `fiefdom`
-instead of the full node invocation:
+### As a Claude Code plugin (recommended)
 
 ```bash
-npm link                    # provides `fiefdom`
+claude --plugin-dir ~/projects/fiefdom      # try it in one session
 ```
 
-Without it, generated files call a shim at `<repo>/.fiefdom/bin/fiefdom`, which
-works the same way.
+The plugin supplies the hooks, the `/fiefdom:*` commands, and puts `fiefdom` on
+the Bash tool's `PATH`. In a repo you want divided:
 
-### Pi
+```bash
+fiefdom init          # analyse, write .fiefdom/fiefs.json and personas
+fiefdom sync          # generate this repo's agents
+```
 
-Pi loads extensions from `~/.pi/agent/extensions/`, so symlink the checkout in
-(the directory usually does not exist yet):
+In plugin mode `sync` writes **only** the per-repo agents — the hooks and
+commands come from the plugin, so nothing is added to
+`.claude/settings.local.json` and there is no generated shim to keep pointing at
+your checkout.
+
+### As a Claude Code standalone install
+
+Without the plugin, everything is written into the repo instead: hooks merged
+into `.claude/settings.local.json`, `/fiefdom` commands under
+`.claude/commands/`, and a `.fiefdom/bin/fiefdom` shim onto this checkout.
+Identical behaviour; more moving parts, and the checkout must stay put.
+
+```bash
+cd ~/some/repo && node ~/projects/fiefdom/bin/fiefdom.ts init
+```
+
+### As a Pi extension
+
+Pi loads extensions from `~/.pi/agent/extensions/`, so symlink the same
+checkout in (the directory usually does not exist yet):
 
 ```bash
 mkdir -p ~/.pi/agent/extensions
 ln -s ~/projects/fiefdom ~/.pi/agent/extensions/fiefdom
 ```
 
-`package.json` points Pi at `adapters/pi/index.ts`; nothing else is needed.
+`package.json` points Pi at `adapters/pi/index.ts`. Nothing else is needed, and
+the Claude Code half is never loaded.
 
 ### Check it worked
 
@@ -101,7 +124,7 @@ fiefdom analyze             # proposes a division, writes nothing
 
 For Pi, start a session in a git repo with no fiefs configured — the status
 line should read `Fiefdom: Not configured. Use /fiefdom-setup to divide this
-repo.` If it says nothing at all, the symlink is not being picked up.
+repo.`
 
 ## Quick start — Claude Code
 

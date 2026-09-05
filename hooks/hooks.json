@@ -1,0 +1,49 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/fiefdom",
+            "args": [
+              "hook",
+              "pre-tool-use"
+            ],
+            "statusMessage": "Checking fief boundaries..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/fiefdom",
+            "args": [
+              "hook",
+              "post-tool-use"
+            ]
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/fiefdom",
+            "args": [
+              "hook",
+              "session-start"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

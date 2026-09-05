@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fiefdom CLI. Lives in bin/ so that, as a Claude Code plugin, it lands on the
+# Bash tool's PATH and an agent can simply type `fiefdom`.
+exec node --no-warnings --experimental-strip-types "$(dirname "$0")/fiefdom.ts" "$@"
