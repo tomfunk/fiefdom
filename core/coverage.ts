@@ -25,9 +25,15 @@ export interface Coverage {
 	available: boolean;
 }
 
+/**
+ * Every file in the working set: tracked, plus untracked files git does not
+ * ignore. A file that exists but has never been committed still belongs to
+ * somebody — and in a repo with no commits yet, tracked-only would report
+ * nothing at all.
+ */
 function trackedFiles(repoRoot: string): string[] | null {
 	try {
-		const stdout = execFileSync("git", ["ls-files", "-z"], {
+		const stdout = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
 			cwd: repoRoot,
 			encoding: "utf-8",
 			maxBuffer: 64 * 1024 * 1024,
