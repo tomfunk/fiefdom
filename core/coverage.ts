@@ -8,12 +8,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import {
-	type FiefConfig,
-	type FiefdomConfig,
-	pathMatchesFief,
-	territories,
-} from "./config.ts";
+import { type FiefConfig, type FiefdomConfig, pathMatchesFief } from "./config.ts";
 
 export interface Coverage {
 	/** Total tracked files considered */
@@ -49,7 +44,8 @@ export function computeCoverage(config: FiefdomConfig): Coverage {
 
 	const coverage: Coverage = {
 		total: 0,
-		owned: new Map(territories(config).map((f) => [f.id, 0])),
+		// Every holder counts, baronies included — their land is scattered, not absent.
+		owned: new Map(config.fiefs.map((f) => [f.id, 0])),
 		unowned: [],
 		contested: [],
 		shared: [],
@@ -61,7 +57,7 @@ export function computeCoverage(config: FiefdomConfig): Coverage {
 	coverage.total = files.length;
 
 	for (const file of files) {
-		const claimants: FiefConfig[] = territories(config).filter((fief) =>
+		const claimants: FiefConfig[] = config.fiefs.filter((fief) =>
 			pathMatchesFief(file, fief.paths)
 		);
 

@@ -26,9 +26,9 @@ import {
 	pathMatchesFief,
 	personaPathOf,
 	serializeConfig,
+	baronies,
 	territories,
 	toRepoRelative,
-	witan,
 } from "../../core/config.ts";
 import { FiefMemory, VALID_CATEGORIES } from "../../core/memory.ts";
 import {
@@ -52,6 +52,8 @@ import {
 	hookEntries,
 	memorySnapshot,
 	orchestratorContext,
+	serfFile,
+	serfName,
 } from "./templates.ts";
 
 // ---------------------------------------------------------------------------
@@ -197,9 +199,14 @@ async function cmdSync(args: Args): Promise<void> {
 	fs.mkdirSync(commandsDir, { recursive: true });
 
 	// Agent definitions (one per fief), plus removal of ones we no longer own.
-	const wanted = new Set(config.fiefs.map((f) => `${agentName(f)}.md`));
+	const wanted = new Set([
+		...config.fiefs.map((f) => `${agentName(f)}.md`),
+		...config.fiefs.filter((f) => f.paths.length).map((f) => `${serfName(f)}.md`),
+	]);
 	for (const entry of fs.readdirSync(agentsDir)) {
-		const ours = entry.startsWith("fief-") || entry.startsWith("wita-");
+		const ours = ["fief-", "wita-", "vassal-", "baron-", "serf-"].some((p) =>
+			entry.startsWith(p)
+		);
 		if (ours && entry.endsWith(".md") && !wanted.has(entry)) {
 			fs.rmSync(path.join(agentsDir, entry));
 			console.log(`  removed stale agent ${entry}`);
@@ -219,6 +226,15 @@ async function cmdSync(args: Args): Promise<void> {
 			),
 			"utf-8"
 		);
+
+		// A holder with no land has nothing to put a serf on.
+		if (fief.paths.length) {
+			fs.writeFileSync(
+				path.join(agentsDir, `${serfName(fief)}.md`),
+				serfFile(fief, config, readPersona(config, fief)),
+				"utf-8"
+			);
+		}
 	}
 
 	for (const [name, content] of commandFiles(bin, config.paths.stateDirName)) {
@@ -236,12 +252,13 @@ async function cmdSync(args: Args): Promise<void> {
 	ensureGitignore(root, config.paths.stateDirName);
 
 	console.log(
-		`Synced ${config.fiefs.length} fief agents into .claude/:\n` +
+		`Synced ${config.fiefs.length} holders into .claude/:\n` +
 			config.fiefs
 				.map((f) =>
-					f.role === "wita"
-						? `  ${agentName(f)} -> wita (no land)`
-						: `  ${agentName(f)} -> ${f.paths.join(", ")}`
+					f.paths.length
+						? `  ${agentName(f)} -> ${f.paths.join(", ")}` +
+							`\n    ${serfName(f)} -> same land, for narrow tasks`
+						: `  ${agentName(f)} -> no land (advises)`
 				)
 				.join("\n") +
 			`\n\nRestart the session (or /reload) to pick up new agents and hooks.`
@@ -370,26 +387,32 @@ function cmdStatus(args: Args): void {
 		return;
 	}
 
-	console.log(`Fiefdom: ${rows.length} fiefs in ${root}`);
+	console.log(
+		`Fiefdom: ${rows.length} fiefs${baronies(config).length ? ` and ${baronies(config).length} baronies` : ""} in ${root}`
+	);
 	console.log(
 		`Config: ${config.paths.stateDirName}/fiefs.json | enforcement: ${config.enforcement}`
 	);
 	console.log("");
 	for (const row of rows) {
-		console.log(`  ${row.id}  (agent: ${row.agent})`);
-		console.log(`    paths:    ${row.paths.join(", ")}`);
+		console.log(`  ${row.id}  (vassal: ${row.agent})`);
+		console.log(`    holds:    ${row.paths.join(", ")}`);
 		console.log(
 			`    files:    ${row.files}` +
 				`    learnings: ${row.memories}${row.persona ? "" : "    [persona file missing]"}`
 		);
 	}
-	const advisors = witan(config);
-	if (advisors.length) {
-		console.log("\n  witan — no land, consulted rather than assigned:");
-		for (const advisor of advisors) {
+	const scattered = baronies(config);
+	if (scattered.length) {
+		console.log("\n  baronies — land scattered through the fiefs above:");
+		for (const baron of scattered) {
+			const memory = memoryFor(config, baron);
+			console.log(`    ${baron.id}  (baron: ${agentName(baron)})`);
 			console.log(
-				`    ${advisor.id}  (agent: ${agentName(advisor)})` +
-					`    learnings: ${memoryFor(config, advisor).getEntryCount()}`
+				`      holds:    ${baron.paths.join(", ") || "no land (advises only)"}`
+			);
+			console.log(
+				`      files:    ${coverage.owned.get(baron.id) ?? 0}    learnings: ${memory.getEntryCount()}`
 			);
 		}
 	}
@@ -883,14 +906,14 @@ function hookPreToolUse(): never {
 		const owner = findFiefForPath(relative, config);
 
 		const actor = payload.agent_type
-			? `Fiefdom: "${payload.agent_type}" is not a fief, and only fief agents write in this repo.\n`
+			? `Fiefdom: "${payload.agent_type}" holds no land here, and only holders write in this repo.\n`
 			: `Fiefdom: the orchestrator does not edit files.\n`;
 
 		deny(
 			actor +
 				(viaShell ? `That command writes ${relative} (${reason}).\n` : "") +
 				(owner
-					? `${relative} belongs to the ${owner.id} fief — delegate with the Agent tool (subagent_type: "${agentName(owner)}"), or SendMessage if that fief is already running.\n`
+					? `${relative} is ${owner.id}'s land — grant the work with the Agent tool (subagent_type: "${agentName(owner)}"), or SendMessage if that holder is already running.\n`
 					: `${relative} is not owned by any fief. Ask the user whether to widen a fief's paths or add it to sharedPaths in ${config.paths.stateDirName}/fiefs.json.\n`) +
 				`Fiefs:\n${roster}`
 		);
@@ -903,9 +926,9 @@ function hookPreToolUse(): never {
 		);
 	}
 
-	if (fief.role === "wita") {
+	if (fief.paths.length === 0) {
 		deny(
-			`Fiefdom: ${fief.id} is a wita — it holds no land and does not write.\n` +
+			`Fiefdom: ${fief.id} holds no land, so it advises rather than writes.\n` +
 				`Report the finding instead: name the file, the gap and the fief that owns it, ` +
 				`and the orchestrator will route the change.`
 		);
@@ -977,7 +1000,7 @@ function hookPostToolUse(): never {
 	const trespass = changed.filter((file) => !allowed(file) && !isFiefdomState(file, config));
 	if (trespass.length === 0) passThrough();
 
-	const who = fief ? `the ${fief.id} fief` : "the orchestrator";
+	const who = fief ? `the ${fief.id} fief` : "any fief (the liege holds none)";
 	const owners = trespass
 		.slice(0, 10)
 		.map((file) => {

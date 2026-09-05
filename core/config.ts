@@ -16,15 +16,18 @@ import {
 } from "./paths.ts";
 
 /**
- * A fief holds land. A wita holds none.
+ * A fief is land — an area of the codebase. Who holds it is a separate thing.
  *
- * From Old English `wita`, a wise one — the witan were the counsellors a king
- * consulted before deciding, holding no territory by virtue of the office. A
- * wita here owns a concern rather than a set of files: the testing philosophy,
- * documentation debt, security posture. Structurally it is a fief with no
- * paths, which the write guard already refuses every write.
+ * - `vassal` holds one fief and works it, answering to the liege.
+ * - `baron` holds land scattered across the fiefs rather than one block: the
+ *   test files, say, which live inside everyone's territory. Historically a
+ *   baron was a tenant-in-chief whose manors lay across many shires.
+ *
+ * Both are vassals of the liege; baron only says the holdings are dispersed.
+ * A baron with no paths at all still works — it simply advises, since the
+ * guard refuses a write to land nobody holds.
  */
-export type Role = "fief" | "wita";
+export type Role = "vassal" | "baron";
 
 export interface FiefConfig {
 	id: string;
@@ -88,18 +91,19 @@ export function loadConfigFrom(paths: FiefdomPaths): FiefdomConfig | null {
 			console.error("Fiefdom: Invalid fief config - missing 'id'");
 			continue;
 		}
-		const declaredWita = fief.role === "wita" || fief.role === "counsel";
-		if (!declaredWita && (!fief.paths || !Array.isArray(fief.paths))) {
+		const landless = fief.role === "wita" || fief.role === "counsel";
+		if (!landless && (!fief.paths || !Array.isArray(fief.paths))) {
 			console.error(`Fiefdom: Invalid fief '${fief.id}' - missing 'paths' array`);
 			continue;
 		}
-		// "counsel" was the name before this took its Old English one.
-		const role: Role = fief.role === "wita" || fief.role === "counsel" ? "wita" : "fief";
+		// Earlier names for the landless adviser, kept loading.
+		const legacyBaron = fief.role === "wita" || fief.role === "counsel";
+		const role: Role = fief.role === "baron" || legacyBaron ? "baron" : "vassal";
 
 		fiefs.push({
 			id: fief.id,
 			role,
-			paths: role === "wita" ? [] : fief.paths,
+			paths: legacyBaron ? [] : (fief.paths ?? []),
 			persona: fief.persona ?? defaultPersonaPath(paths.stateDirName, fief.id),
 			memory: fief.memory ?? defaultMemoryPath(paths.stateDirName, fief.id),
 			description: typeof fief.description === "string" ? fief.description : undefined,
@@ -134,7 +138,7 @@ export function serializeConfig(config: {
 			{
 				fiefs: config.fiefs.map((f) => ({
 					id: f.id,
-					...(f.role === "wita" ? { role: f.role } : {}),
+					...(f.role === "baron" ? { role: f.role } : {}),
 					paths: f.paths,
 					persona: f.persona,
 					memory: f.memory,
@@ -159,14 +163,14 @@ export function memoryPathOf(config: FiefdomConfig, fief: FiefConfig): string {
 	return path.join(config.paths.configRoot, fief.memory);
 }
 
-/** Fiefs that hold land. */
+/** Fiefs held as one block, by a vassal. */
 export function territories(config: FiefdomConfig): FiefConfig[] {
-	return config.fiefs.filter((f) => f.role !== "wita");
+	return config.fiefs.filter((f) => f.role !== "baron");
 }
 
-/** The witan: consulted, never assigned a path. */
-export function witan(config: FiefdomConfig): FiefConfig[] {
-	return config.fiefs.filter((f) => f.role === "wita");
+/** Baronies: holdings scattered across the fiefs. */
+export function baronies(config: FiefdomConfig): FiefConfig[] {
+	return config.fiefs.filter((f) => f.role === "baron");
 }
 
 export function getFief(config: FiefdomConfig, id: string): FiefConfig | undefined {

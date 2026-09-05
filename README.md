@@ -2,33 +2,46 @@
 
 Multi-agent workspace orchestration for **Claude Code** and **Pi**.
 
-Fiefdom splits a repository into "fiefs" (frontend, backend, …), gives each one
-a specialist agent that may only write inside its own territory, and keeps the
-main session as a non-writing orchestrator that plans and routes.
+Fiefdom splits a repository into **fiefs** — areas of land. Each is held by a
+**vassal** that may write only there, and your main session is the **liege**:
+it grants work and receives results, but never works the land itself.
 
 One repo, either harness. Config, personas and accumulated memory live in
 `.fiefdom/` and are shared, so a fief you taught something under Pi knows it
 under Claude Code too.
 
 ```
-                    ┌─────────────────────────────┐
-                    │        Orchestrator         │
-                    │  (your main session)        │
-                    │  • no Write/Edit            │
-                    │  • plans, routes, reconciles│
-                    └───────┬─────────────┬───────┘
-                            │             │
-                 ┌──────────▼───┐   ┌─────▼────────┐
-                 │ frontend fief│   │ backend fief │
-                 │ frontend/**  │   │ backend/**   │
-                 │ shared-ui/** │   │ services/**  │
-                 └──────────────┘   └──────────────┘
-
-  Claude Code: fiefs are subagents (.claude/agents/fief-*.md), boundaries
-               enforced by a PreToolUse hook.
-  Pi:          fiefs are persistent RPC worker processes, boundaries enforced
-               in-process by each worker.
+                        ┌───────────────────────┐
+                        │        LIEGE          │
+                        │  (your main session)  │
+                        │  grants work, holds   │
+                        │  no pen               │
+                        └───┬───────────────┬───┘
+                            │               │
+              ┌─────────────▼──┐   ┌────────▼───────┐
+              │ vassal-frontend│   │ vassal-backend │   ← hold one fief each
+              │ frontend/**    │   │ backend/**     │
+              │ shared-ui/**   │   │ services/**    │
+              └───────┬────────┘   └────────────────┘
+                      │
+              ┌───────▼──────┐         ┌──────────────────┐
+              │ serf-frontend│         │  baron-testing   │
+              │ same land,   │         │  tests/helpers/**│  ← land scattered
+              │ one task     │         │  vitest.config   │    through the fiefs
+              └──────────────┘         └──────────────────┘
 ```
+
+| | |
+|---|---|
+| **fief** | an area of the codebase — the land itself |
+| **liege** | your main session: grants work, receives results, writes nothing |
+| **vassal** | holds one fief and works it; keeps memory across sessions |
+| **baron** | a holder whose land lies scattered through the fiefs |
+| **serf** | a helper a holder puts on one narrow task, bound to the same land |
+
+In Claude Code these are subagents (`.claude/agents/vassal-*.md`) with a
+`PreToolUse` hook enforcing the boundaries. In Pi they are persistent RPC
+worker processes enforcing the same rule in-process.
 
 ## Install
 
@@ -96,15 +109,15 @@ and generates the Claude Code side:
 
 | Generated | Purpose |
 |---|---|
-| `.claude/agents/fief-<id>.md`, `wita-<id>.md` | one subagent each, with its persona, territory and memory instructions |
+| `.claude/agents/vassal-<id>.md`, `baron-<id>.md`, `serf-<id>.md` | one subagent each, with its persona, land and memory instructions |
 | `.claude/commands/fiefdom*.md` | `/fiefdom`, `/fiefdom-plan`, `/fiefdom-setup`, `/fiefdom-review` |
 | `.claude/settings.local.json` | `PreToolUse` guard, `PostToolUse` detector, `SessionStart` briefing |
 | `.gitignore` entries | all of the above stays local |
 
-Restart Claude Code. The orchestrator gets a briefing at session start, and
-routes work by spawning `fief-<id>` subagents (continuing them with
-`SendMessage` so they keep their context). Its own `Write`/`Edit` calls are
-denied with a message naming the fief that owns the file.
+Restart Claude Code. The liege gets a briefing at session start and grants work
+by spawning `vassal-<id>` subagents (continuing them with `SendMessage` so they
+keep their context). Its own `Write`/`Edit` calls are denied with a message
+naming the holder of that land.
 
 Prefer to be asked before anything is written? Run `/fiefdom-setup` instead of
 `fiefdom init` — same result, but it walks you through the proposal first.
@@ -117,7 +130,7 @@ pi
 ```
 
 Pi spawns one persistent worker per fief and removes `write`/`edit` from the
-orchestrator. The tools `list_fiefs`, `route_ticket`, `query_fief`,
+liege. The tools `list_fiefs`, `route_ticket`, `query_fief`,
 `request_from_fief`, `get_fief_memory` and `get_request_log` drive it.
 
 Already configured a repo with either harness? The other one picks it up as-is
@@ -166,43 +179,57 @@ them to `.fiefdom/`.
 
 | Field | Meaning |
 |---|---|
-| `role` | `fief` (default) or `wita` — see below |
-| `paths` | globs the fief may write; a wita has none |
+| `role` | `vassal` (default) or `baron` — see below |
+| `paths` | globs the holder may write |
 | `persona` | system prompt; edit this, not the generated agent file |
 | `description` | used as the subagent's `description` (how Claude decides to delegate) |
-| `enforcement` | `strict` (default): only fiefs write, only inside their paths · `orchestrator`: only the orchestrator is blocked · `off` |
+| `enforcement` | `strict` (default): only holders write, only on their own land · `orchestrator`: only the liege is blocked · `off` |
 | `sharedPaths` | globs any fief may write — lockfiles, shared types |
 
 After editing, run `fiefdom sync` and restart the session.
 
-### The witan
+### Baronies
 
-A fief holds land. A **wita** holds none — from Old English *wita*, a wise one;
-the witan were the counsellors a king consulted before deciding, holding no
-territory by virtue of the office. Here a wita owns a *concern* rather than a
-set of files: the testing philosophy, documentation debt, security posture.
+Some concerns do not sit in one block of land. Test infrastructure lives inside
+every fief; so might a design system, or a set of generated clients. A **baron**
+holds exactly that: scattered holdings, held separately because whoever thinks
+about the concern as a whole should hold the parts that shape it.
 
 ```json
 {
   "id": "testing",
-  "role": "wita",
-  "description": "Consult when planning for what a change should cover, and after work for gaps and slow tests."
+  "role": "baron",
+  "paths": ["tests/helpers/**", "vitest.config.ts", "playwright.config.ts"],
+  "description": "The shared test infrastructure, and the question of whether this repo is testable."
 }
 ```
 
-A wita cannot write; the guard refuses it, and its agent definition withholds
-the file tools. What it has is judgement and memory: a testing wita that
-accumulates *"sync.ts has no coverage of the partial-failure path"* and *"the
-Plaid fixtures make that suite 4s"* across sessions is doing something no
-land-holding fief can, because the gap it is looking for lives in the commits
-that never touched `tests/` at all.
+Historically a baron was a tenant-in-chief whose manors lay across many shires —
+which is the shape here exactly. A baron is still a vassal of the liege; the
+word only says the holdings are dispersed, and it implies no command over the
+vassals whose land it sits inside.
 
-Its agent is named `wita-<id>` rather than `fief-<id>`, so the briefing and the
-routing read the way they should: fiefs are assigned work, witan are consulted.
+How much a barony should hold is a real decision. Give the testing baron every
+test file and no vassal can write its own tests — which makes untested work
+impossible to sneak through, at the cost of routing most changes through two
+holders. Give it only the harness and fixtures, and each vassal tests its own
+land while the baron shapes how. Start narrow: widening a barony later is easy,
+prising files back out of one is not.
 
-Use a wita when a concern is real but has no natural home. Prefer a fief when
-the work has files: documentation has both a path and a file type, so it earns
-land; testing philosophy does not.
+A baron with no `paths` at all is legal and simply advises — every write it
+attempts is refused, since it holds no land.
+
+### Serfs
+
+A holder facing a task that genuinely splits can spawn `serf-<id>`: a helper
+bound to the same land, given one narrow job. Serfs keep no memory — what is
+worth remembering is the holder's to record — and cannot spawn serfs of their
+own, so the tree is never more than two deep.
+
+The guard makes this safe without any new rules. It resolves land from the
+agent's name, so `serf-core` gets exactly core's boundary, and anything it does
+not recognise — `general-purpose`, `Explore` — holds no land and therefore
+cannot write at all.
 
 ### Ownership is the point
 
@@ -227,7 +254,7 @@ are the interesting ones.
 
 `/fiefdom-plan <what you want to build>` does the fan-out before anyone writes
 code: work out which fiefs are affected, ask each what it would need and what
-it needs *from* others, consult the witan while the design is still cheap to
+it needs *from* others, consult the barons while the design is still cheap to
 change, then reconcile the contracts and hand each fief a task that already
 names the interface it can rely on.
 
@@ -266,7 +293,7 @@ Three layers, and it is worth being precise about what each one catches.
 `NotebookEdit` name their target in the hook payload, so the `PreToolUse` guard
 checks it against the actor's paths and denies outright. In Claude Code the
 actor comes from the payload's `agent_type`: no fief identity means the
-orchestrator (or an unrelated subagent), and it does not write at all. In Pi
+liege (or an unrelated subagent), and it does not write at all. In Pi
 each worker applies the same rule in-process.
 
 **2. Shell commands — read, then decided.** An agent working through Bash edits
@@ -323,7 +350,7 @@ in a worktree is judged by the same globs as one in the main directory.
 ## CLI
 
 ```
-fiefdom init [--worktrees] [--enforcement strict|orchestrator|off] [--force]
+fiefdom init [--enforcement strict|orchestrator|off] [--force]
 fiefdom sync                     Regenerate .claude/ files from the config
 fiefdom status [--json]          Fiefs, file coverage, learnings, ownership gaps
 fiefdom review                   Boundary review with suggestions
@@ -377,9 +404,10 @@ remaining worker), and settle-waiters are released when a child dies.
 
 ## Limitations
 
-- One process per fief in Pi; one subagent per fief in Claude Code. Both cost
-  real resources — divide a repo into the fiefs it needs, not the maximum.
-- Cross-fief changes need coordination through the orchestrator by design.
+- One process per fief in Pi; one subagent per holder in Claude Code, plus any
+  serfs it puts to work. All cost real resources — divide a repo into the fiefs
+  it needs, not the maximum.
+- Changes crossing fiefs need the liege to coordinate them, by design.
 - Writes the guard cannot read are caught after the fact, not prevented (see
   Enforcement).
 - Claude Code subagents live for the session; what persists across sessions is

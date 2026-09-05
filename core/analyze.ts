@@ -644,7 +644,7 @@ export function generateConfigFromAnalysis(
 ): { fiefs: FiefConfig[]; personas: Map<string, string> } {
 	const fiefs: FiefConfig[] = analysis.proposedFiefs.map((fief) => ({
 		id: fief.id,
-		role: "fief" as const,
+		role: "vassal" as const,
 		paths: fief.paths,
 		persona: defaultPersonaPath(stateDirName, fief.id),
 		memory: defaultMemoryPath(stateDirName, fief.id),
