@@ -9,6 +9,7 @@
 import type { FiefConfig, FiefdomConfig } from "../../core/config.ts";
 import type { FiefMemory } from "../../core/memory.ts";
 import { fiefInstructions } from "../../core/persona.ts";
+import { counsel, territories } from "../../core/config.ts";
 
 export const AGENT_PREFIX = "fief-";
 
@@ -35,17 +36,23 @@ export function agentFile(
 	memorySnapshot: string,
 	bin: string
 ): string {
+	const isCounsel = fief.role === "counsel";
+
 	const description =
 		fief.description?.trim() ||
-		`${fief.id} specialist. Owns ${fief.paths.join(", ")}. Use for any change under those paths.`;
+		(isCounsel
+			? `${fief.id} counsel. Holds no files; consult for review and gaps in ${fief.id}.`
+			: `${fief.id} specialist. Owns ${fief.paths.join(", ")}. Use for any change under those paths.`);
 
 	const frontmatter = [
 		"---",
 		`name: ${agentName(fief.id)}`,
 		`description: ${JSON.stringify(description)}`,
 		"model: inherit",
-		// A fief does its own work; it does not get to spawn more agents.
-		"disallowedTools: Agent",
+		// Neither kind delegates further; counsel additionally never writes.
+		isCounsel
+			? "disallowedTools: Agent, Write, Edit, MultiEdit, NotebookEdit"
+			: "disallowedTools: Agent",
 		"---",
 	].join("\n");
 
@@ -67,9 +74,20 @@ ${memorySnapshot}
  * Context injected into the orchestrator session by the SessionStart hook.
  */
 export function orchestratorContext(config: FiefdomConfig, bin: string): string {
-	const table = config.fiefs
+	const table = territories(config)
 		.map((f) => `- **${f.id}** (agent \`${agentName(f.id)}\`) owns ${f.paths.join(", ")}`)
 		.join("\n");
+
+	const advisors = counsel(config);
+	const counselTable = advisors.length
+		? `\n\nCounsel — no territory, consulted rather than assigned:\n` +
+			advisors
+				.map(
+					(f) =>
+						`- **${f.id}** (agent \`${agentName(f.id)}\`): ${f.description ?? `${f.id} across the whole repository`}`
+				)
+				.join("\n")
+		: "";
 
 	const enforcement =
 		config.enforcement === "off"
@@ -83,7 +101,7 @@ export function orchestratorContext(config: FiefdomConfig, bin: string): string 
 This repository is divided into fiefs. You are the **orchestrator**: you read,
 plan and route, but you do not edit files. ${enforcement}
 
-${table}
+${table}${counselTable}
 
 ## How to route work
 
@@ -92,7 +110,10 @@ ${table}
   spawning a second one for the same territory.
 - For planning, ask each affected fief what it would need *before* assigning
   work, then reconcile the contracts yourself and hand each fief a task that
-  already names the agreed interface.
+  already names the agreed interface. \`/fiefdom-plan\` does this fan-out.
+- Consult counsel while planning, not only at the end: they hold what previous
+  sessions learned about their concern, and a gap named before the work is
+  cheaper than one found after it.
 - Cross-fief requests are worth recording: \`${bin} log --from <fief> --to <fief> --message "..."\`.
 - The guard covers the shell too: a \`sed -i\`, a heredoc or a \`>\` redirection
   into a file you do not own is denied the same way an Edit is.
@@ -155,6 +176,42 @@ Configure fiefdom for this repository.
    the SessionStart context are picked up.
 
 Existing memory is never deleted by setup — reconfiguring is safe.
+`
+	);
+
+	files.set(
+		"fiefdom-plan.md",
+		`---
+description: Plan a change across fiefs before any of them writes code
+argument-hint: what you want to build
+allowed-tools: Bash(${bin} status:*), Bash(${bin} owner:*), Bash(${bin} memory show:*), Bash(${bin} log:*), Read, Grep, Glob, Agent
+---
+
+Plan this change across the fiefs: $ARGUMENTS
+
+Do not let anyone write code yet. The point is to settle the contracts first,
+so each fief can then work alone instead of discovering the interface halfway
+through.
+
+1. Work out which fiefs the change touches. \`${bin} status\` lists them and
+   \`${bin} owner <path>\` resolves any specific file.
+2. Ask each affected fief what it would need, marking the request clearly as a
+   planning query: they should answer with what they would change, what they
+   need from others (exact signatures, routes, payload shapes) and what they
+   are unsure about — and change nothing.
+3. Consult counsel now rather than later. They hold what earlier sessions
+   learned about their concern, and a gap named before the work is far cheaper
+   than one found after it.
+4. Reconcile the answers yourself. Where two fiefs disagree about an interface,
+   decide it — that is the orchestrator's job, and leaving it open guarantees
+   rework. Record cross-fief agreements with
+   \`${bin} log --from <fief> --to <fief> --message "..."\`.
+5. Present the plan: the agreed contracts, then one task per fief in dependency
+   order, each naming the interface it can rely on. Ask before executing.
+
+If the plan turns out to need one fief to wait on another for most of its work,
+say so — that usually means the change is really one piece of work sitting
+across a boundary, which is worth knowing before you split it in two.
 `
 	);
 

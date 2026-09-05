@@ -12,14 +12,82 @@ export function fiefInstructions(
 	config: FiefdomConfig,
 	bin: string
 ): string {
+	if (fief.role === "counsel") return counselInstructions(fief, config, bin);
+	return territoryInstructions(fief, config, bin);
+}
+
+/**
+ * Counsel holds no territory. Its whole value is judgement plus memory across
+ * sessions, so the instructions push toward finding gaps and naming them
+ * precisely rather than toward doing the work.
+ */
+function counselInstructions(
+	fief: FiefConfig,
+	config: FiefdomConfig,
+	bin: string
+): string {
+	const holders = config.fiefs
+		.filter((f) => f.role !== "counsel")
+		.map((f) => `- ${f.id}: ${f.paths.join(", ")}`)
+		.join("\n");
+
+	return `## Your standing
+
+You are **${fief.id} counsel**. You hold no territory and you do not write
+code — every write you attempt will be refused, by design. You are consulted:
+before work, on what it should account for; after work, on what it missed.
+
+The fiefs that do hold territory:
+${holders || "- (none)"}
+
+## How to answer
+
+Be specific enough to act on. "Needs more tests" is worthless; "sync.ts has no
+coverage of the partial-failure path, and the fixture makes it a 4s test" can
+be routed to a fief as a task. Name files, name the gap, say why it matters,
+and say which fief owns the fix.
+
+Say when something is fine. A review that always finds problems teaches people
+to ignore it. If the work is sound in your area, say so briefly and stop.
+
+Rank what you report. If you raise five things and the first is the only one
+that matters this week, say that.
+
+## Memory
+
+Your memory is the point of you — it is how a concern accumulates across
+sessions instead of being rediscovered each time.
+
+\`\`\`bash
+${bin} memory show --fief ${fief.id}     # what you already know
+${bin} memory add --fief ${fief.id} --json '{"issues":["..."],"notes":["..."]}'
+\`\`\`
+
+Record standing gaps, debts and patterns you keep seeing — the things worth
+knowing next session. Use the four categories: decisions, conventions, issues,
+notes. Omit the empty ones, and skip it entirely when nothing durable came up.`;
+}
+
+function territoryInstructions(
+	fief: FiefConfig,
+	config: FiefdomConfig,
+	bin: string
+): string {
 	const shared = config.sharedPaths.length
 		? `\nPaths any fief may write (shared): ${config.sharedPaths.join(", ")}\n`
 		: "";
 
 	const others = config.fiefs
-		.filter((f) => f.id !== fief.id)
+		.filter((f) => f.id !== fief.id && f.role !== "counsel")
 		.map((f) => `- ${f.id}: ${f.paths.join(", ")}`)
 		.join("\n");
+
+	const advisors = config.fiefs.filter((f) => f.role === "counsel");
+	const counselNote = advisors.length
+		? `\n\nThis repository also keeps counsel — ${advisors
+				.map((f) => f.id)
+				.join(", ")} — who hold no territory and review across all of it. If one\nof them has raised something about your area, treat it as a real finding.`
+		: "";
 
 	return `## Your territory
 
@@ -28,6 +96,8 @@ ${fief.paths.map((p) => `- ${p}`).join("\n")}
 ${shared}
 Other fiefs own the rest of the repository:
 ${others || "- (no other fiefs)"}
+
+${counselNote}
 
 If a change needs to happen outside your paths, do **not** edit it and do not
 work around the boundary — including through the shell, which is guarded the

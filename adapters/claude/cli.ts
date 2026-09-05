@@ -20,12 +20,14 @@ import {
 	type FiefdomConfig,
 	findFiefForPath,
 	getFief,
+	counsel,
 	loadConfig,
 	memoryPathOf,
 	normalizeRepoPath,
 	pathMatchesFief,
 	personaPathOf,
 	serializeConfig,
+	territories,
 	toRepoRelative,
 } from "../../core/config.ts";
 import { FiefMemory, VALID_CATEGORIES } from "../../core/memory.ts";
@@ -234,7 +236,13 @@ async function cmdSync(args: Args): Promise<void> {
 
 	console.log(
 		`Synced ${config.fiefs.length} fief agents into .claude/:\n` +
-			config.fiefs.map((f) => `  ${agentName(f.id)} -> ${f.paths.join(", ")}`).join("\n") +
+			config.fiefs
+				.map((f) =>
+					f.role === "counsel"
+						? `  ${agentName(f.id)} -> counsel (no territory)`
+						: `  ${agentName(f.id)} -> ${f.paths.join(", ")}`
+				)
+				.join("\n") +
 			`\n\nRestart the session (or /reload) to pick up new agents and hooks.`
 	);
 }
@@ -323,7 +331,7 @@ function cmdStatus(args: Args): void {
 	const config = requireConfig(root);
 
 	const coverage = computeCoverage(config);
-	const rows = config.fiefs.map((fief) => {
+	const rows = territories(config).map((fief) => {
 		const memory = memoryFor(config, fief);
 		return {
 			id: fief.id,
@@ -374,6 +382,17 @@ function cmdStatus(args: Args): void {
 				`    learnings: ${row.memories}${row.persona ? "" : "    [persona file missing]"}`
 		);
 	}
+	const advisors = counsel(config);
+	if (advisors.length) {
+		console.log("\n  counsel — no territory, consulted rather than assigned:");
+		for (const advisor of advisors) {
+			console.log(
+				`    ${advisor.id}  (agent: ${agentName(advisor.id)})` +
+					`    learnings: ${memoryFor(config, advisor).getEntryCount()}`
+			);
+		}
+	}
+
 	if (!coverage.available) {
 		if (unassigned.length) {
 			console.log(`\n  unowned directories: ${unassigned.join(", ")}`);
@@ -880,6 +899,14 @@ function hookPreToolUse(): never {
 	if (!fief) {
 		deny(
 			`Fiefdom: agent "${payload.agent_type}" claims fief "${fiefId}", which is not in ${config.paths.stateDirName}/fiefs.json. Run \`fiefdom sync\` after editing the config.`
+		);
+	}
+
+	if (fief.role === "counsel") {
+		deny(
+			`Fiefdom: ${fief.id} is counsel — it holds no territory and does not write.\n` +
+				`Report the finding instead: name the file, the gap and the fief that owns it, ` +
+				`and the orchestrator will route the change.`
 		);
 	}
 

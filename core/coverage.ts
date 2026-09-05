@@ -12,6 +12,7 @@ import {
 	type FiefConfig,
 	type FiefdomConfig,
 	pathMatchesFief,
+	territories,
 } from "./config.ts";
 
 export interface Coverage {
@@ -48,7 +49,7 @@ export function computeCoverage(config: FiefdomConfig): Coverage {
 
 	const coverage: Coverage = {
 		total: 0,
-		owned: new Map(config.fiefs.map((f) => [f.id, 0])),
+		owned: new Map(territories(config).map((f) => [f.id, 0])),
 		unowned: [],
 		contested: [],
 		shared: [],
@@ -60,7 +61,7 @@ export function computeCoverage(config: FiefdomConfig): Coverage {
 	coverage.total = files.length;
 
 	for (const file of files) {
-		const claimants: FiefConfig[] = config.fiefs.filter((fief) =>
+		const claimants: FiefConfig[] = territories(config).filter((fief) =>
 			pathMatchesFief(file, fief.paths)
 		);
 

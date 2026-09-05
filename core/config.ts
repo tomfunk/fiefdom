@@ -15,8 +15,17 @@ import {
 	resolvePaths,
 } from "./paths.ts";
 
+/**
+ * A fief holds territory. Counsel holds none: it owns a concern rather than a
+ * set of files — the testing philosophy, documentation debt, security posture —
+ * and is consulted rather than assigned. Structurally it is a fief with no
+ * paths, which the write guard already refuses every write.
+ */
+export type Role = "fief" | "counsel";
+
 export interface FiefConfig {
 	id: string;
+	role: Role;
 	paths: string[];
 	/** Persona file, relative to the repo root */
 	persona: string;
@@ -76,13 +85,16 @@ export function loadConfigFrom(paths: FiefdomPaths): FiefdomConfig | null {
 			console.error("Fiefdom: Invalid fief config - missing 'id'");
 			continue;
 		}
-		if (!fief.paths || !Array.isArray(fief.paths)) {
+		if (fief.role !== "counsel" && (!fief.paths || !Array.isArray(fief.paths))) {
 			console.error(`Fiefdom: Invalid fief '${fief.id}' - missing 'paths' array`);
 			continue;
 		}
+		const role: Role = fief.role === "counsel" ? "counsel" : "fief";
+
 		fiefs.push({
 			id: fief.id,
-			paths: fief.paths,
+			role,
+			paths: role === "counsel" ? [] : fief.paths,
 			persona: fief.persona ?? defaultPersonaPath(paths.stateDirName, fief.id),
 			memory: fief.memory ?? defaultMemoryPath(paths.stateDirName, fief.id),
 			description: typeof fief.description === "string" ? fief.description : undefined,
@@ -117,6 +129,7 @@ export function serializeConfig(config: {
 			{
 				fiefs: config.fiefs.map((f) => ({
 					id: f.id,
+					...(f.role === "counsel" ? { role: f.role } : {}),
 					paths: f.paths,
 					persona: f.persona,
 					memory: f.memory,
@@ -139,6 +152,16 @@ export function personaPathOf(config: FiefdomConfig, fief: FiefConfig): string {
 /** Absolute path to a fief's memory directory. */
 export function memoryPathOf(config: FiefdomConfig, fief: FiefConfig): string {
 	return path.join(config.paths.configRoot, fief.memory);
+}
+
+/** Fiefs that hold territory. */
+export function territories(config: FiefdomConfig): FiefConfig[] {
+	return config.fiefs.filter((f) => f.role !== "counsel");
+}
+
+/** Counsel: consulted, never assigned a path. */
+export function counsel(config: FiefdomConfig): FiefConfig[] {
+	return config.fiefs.filter((f) => f.role === "counsel");
 }
 
 export function getFief(config: FiefdomConfig, id: string): FiefConfig | undefined {

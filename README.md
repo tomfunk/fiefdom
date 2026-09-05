@@ -97,7 +97,7 @@ and generates the Claude Code side:
 | Generated | Purpose |
 |---|---|
 | `.claude/agents/fief-<id>.md` | one subagent per fief, with its persona, territory and memory instructions |
-| `.claude/commands/fiefdom*.md` | `/fiefdom`, `/fiefdom-setup`, `/fiefdom-review` |
+| `.claude/commands/fiefdom*.md` | `/fiefdom`, `/fiefdom-plan`, `/fiefdom-setup`, `/fiefdom-review` |
 | `.claude/settings.local.json` | `PreToolUse` guard, `PostToolUse` detector, `SessionStart` briefing |
 | `.gitignore` entries | all of the above stays local |
 
@@ -166,13 +166,39 @@ them to `.fiefdom/`.
 
 | Field | Meaning |
 |---|---|
-| `paths` | globs the fief may write |
+| `role` | `fief` (default) or `counsel` — see below |
+| `paths` | globs the fief may write; counsel has none |
 | `persona` | system prompt; edit this, not the generated agent file |
 | `description` | used as the subagent's `description` (how Claude decides to delegate) |
 | `enforcement` | `strict` (default): only fiefs write, only inside their paths · `orchestrator`: only the orchestrator is blocked · `off` |
 | `sharedPaths` | globs any fief may write — lockfiles, shared types |
 
 After editing, run `fiefdom sync` and restart the session.
+
+### Counsel
+
+A fief holds territory. **Counsel** holds none: it owns a *concern* rather than
+a set of files — the testing philosophy, documentation debt, security posture —
+and is consulted rather than assigned.
+
+```json
+{
+  "id": "testing",
+  "role": "counsel",
+  "description": "Consult when planning for what a change should cover, and after work for gaps and slow tests."
+}
+```
+
+Counsel cannot write; the guard refuses it, and its agent definition withholds
+the file tools. What it has is judgement and memory: a testing counsel that
+accumulates *"sync.ts has no coverage of the partial-failure path"* and *"the
+Plaid fixtures make that suite 4s"* across sessions is doing something no
+territory-holding fief can, because the gap it is looking for lives in the
+commits that never touched `tests/` at all.
+
+Use counsel when a concern is real but has no natural home. Prefer a fief when
+the work has files: documentation has both a path and a file type, so it earns
+territory; testing philosophy does not.
 
 ### Ownership is the point
 
@@ -192,6 +218,18 @@ It also reports **contested** files — claimed by two fiefs, where first match
 silently wins — and groups anything unowned so you can see the shape of the
 gap. Aim for full coverage with an empty `sharedPaths`; the files that resist
 are the interesting ones.
+
+## Planning across fiefs
+
+`/fiefdom-plan <what you want to build>` does the fan-out before anyone writes
+code: work out which fiefs are affected, ask each what it would need and what
+it needs *from* others, consult counsel while the design is still cheap to
+change, then reconcile the contracts and hand each fief a task that already
+names the interface it can rely on.
+
+The planning queries are a convention, not an enforced mode — a fief asked to
+plan could still write inside its own territory. What the boundary guarantees
+is that it cannot pre-empt anyone else's.
 
 ## Memory
 
