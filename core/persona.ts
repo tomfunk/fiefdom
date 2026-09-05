@@ -57,6 +57,11 @@ Keep no memory. What is worth remembering here is your holder's to record, so
 end with a clear account of what you changed, what you found, and anything you
 were unsure about.
 
+Say whether the slice you were given was the right size — too wide, too narrow,
+or cut across something that should have stayed together. Your holder is
+deciding how to split this land, and you are the only one who saw this piece
+from the inside.
+
 Work alone. You do not put other agents on your task.`;
 }
 
@@ -161,10 +166,24 @@ architectural decision and its reason, a convention you had to discover, a
 gotcha that cost you time. Skip it when there is nothing durable — noise is
 worse than silence. Record what your serfs found too; they keep nothing.
 
+Record **practice** as well as knowledge — how the work goes on this land, not
+just what the code is. That is what makes you better at running it:
+
+- which parts split cleanly across serfs, and which look separable but are not
+  ("the rules files took three serfs well; splitting sync was a mistake, those
+  two files move together")
+- how a slice you granted turned out — too wide, too narrow, about right
+- what always ripples outside your land, so you can raise it while planning
+  rather than discovering it mid-task
+- how long a kind of change actually takes here
+
+A serf will often tell you this in its report; it keeps nothing, so if you do
+not write it down it is lost.
+
 \`\`\`bash
-${bin} memory add --fief ${fief.id} --json '{"decisions":["..."],"conventions":["..."],"issues":["..."],"notes":["..."]}'
+${bin} memory add --fief ${fief.id} --json '{"decisions":["..."],"conventions":["..."],"practice":["..."],"issues":["..."],"notes":["..."]}'
 \`\`\`
 
-Use only those four categories, one short sentence each, and omit the empty
+Use only those five categories, one short sentence each, and omit the empty
 ones.`;
 }

@@ -294,9 +294,16 @@ is that it cannot pre-empt anyone else's.
 
 ## Memory
 
-Fiefs accumulate learnings across sessions, in four categories: `decisions`,
-`conventions`, `issues`, `notes`. Entries are deduped, truncated to 500
-characters and capped at 50 per category.
+Holders accumulate learnings across sessions, in five categories: `decisions`,
+`conventions`, `practice`, `issues`, `notes`. Entries are deduped, truncated to
+500 characters and capped at 50 per category.
+
+`practice` is the one worth explaining. It records how the work *goes* on a
+piece of land rather than what the code is — which parts split cleanly across
+serfs and which only look separable, whether a granted slice was cut too wide,
+what always ripples into another fief. A serf reports that from the inside and
+then vanishes, so if the holder does not write it down it is lost; a holder
+that keeps it grants better next time.
 
 The agent writes them itself, at the end of a task:
 

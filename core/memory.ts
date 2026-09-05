@@ -22,7 +22,19 @@ export interface MemoryEntry {
 	metadata?: Record<string, unknown>;
 }
 
-export const VALID_CATEGORIES = ["decisions", "conventions", "issues", "notes"];
+/**
+ * `practice` is about how the work goes rather than what the code is: which
+ * parts of this land split cleanly across serfs, what always ripples into
+ * another fief, how long a kind of change actually takes. A holder that
+ * remembers this grants better next time.
+ */
+export const VALID_CATEGORIES = [
+	"decisions",
+	"conventions",
+	"practice",
+	"issues",
+	"notes",
+];
 const MAX_ENTRIES_PER_CATEGORY = 50; // Keep it lean
 const MAX_CONTENT_LENGTH = 500; // Truncate long entries
 
@@ -199,7 +211,7 @@ export class FiefMemory {
 		const sections: string[] = [];
 
 		// Priority order: decisions > conventions > issues > notes
-		const priorityOrder = ["decisions", "conventions", "issues", "notes"];
+		const priorityOrder = ["decisions", "conventions", "practice", "issues", "notes"];
 		let totalIncluded = 0;
 		const maxTotal = 15; // Keep context lean
 
