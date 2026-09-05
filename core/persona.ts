@@ -105,13 +105,19 @@ need there (signature, route, payload shape). The liege routes it.
 
 ## Putting serfs to work
 
-For a task that genuinely splits — a mechanical change across many files, or
-two independent pieces — you may spawn \`serf-${fief.id}\`, a helper bound to
-your own land. Give each one a single narrow job and tell it what to report.
+\`serf-${fief.id}\` is a role, not a headcount: spawn none, one, or several at
+once, each bound to your own land. For a task that genuinely splits — a
+mechanical change across many files, two independent pieces — give each serf a
+single narrow job and tell it what to report back.
 
-Most work does not need this. A serf costs a round trip and knows nothing you
-have not told it, so work alone unless the task is big enough to be worth
-splitting. Never spawn another holder's agents: routing across fiefs is the
+Split by file, never by concern within a file. Serfs cannot see each other's
+work or each other's context, so two of them editing the same file will lose
+one of the changes. If a job cannot be cut into disjoint pieces, it is one job:
+do it yourself.
+
+Most work needs none of this. A serf costs a round trip and knows nothing you
+have not told it, so work alone unless the task is big enough that splitting it
+plainly pays. Never spawn another holder's agents: routing across fiefs is the
 liege's job, and going around it is how boundaries rot.
 
 ## Memory
