@@ -219,17 +219,47 @@ prising files back out of one is not.
 A baron with no `paths` at all is legal and simply advises — every write it
 attempts is refused, since it holds no land.
 
-### Serfs
+### Serfs, and ephemeral sub-fiefs
 
 A holder facing a task that genuinely splits can spawn `serf-<id>`: a helper
-bound to the same land, given one narrow job. Serfs keep no memory — what is
-worth remembering is the holder's to record — and cannot spawn serfs of their
+bound to the same land, given one narrow job. `serf-core` is a role rather than
+a headcount — none, one, or several at once. Serfs keep no memory (what is
+worth remembering is the holder's to record) and cannot spawn serfs of their
 own, so the tree is never more than two deep.
 
-The guard makes this safe without any new rules. It resolves land from the
-agent's name, so `serf-core` gets exactly core's boundary, and anything it does
-not recognise — `general-purpose`, `Explore` — holds no land and therefore
-cannot write at all.
+Running several at once wants something narrower than "all of core", because
+two serfs editing one file will lose a change. So a holder can **subinfeudate**:
+carve part of its own land into a grant and put a serf on that alone.
+
+```bash
+fiefdom grant --fief core --paths "core/sync.ts,core/plaid.ts" --task "retry on 429"
+# Granted grant-5b232527: core/sync.ts, core/plaid.ts
+#
+# Put this line in the serf's prompt, before anything else:
+#   Claim your grant first: `.fiefdom/bin/fiefdom claim grant-5b232527`
+```
+
+The serf claims it, and from then on holds those files alone — everything else
+is refused it, including land its own holder may write. In that mode the holder
+is a *mesne lord*: it holds from the liege, grants below, and coordinates
+rather than typing.
+
+The binding uses only what a hook is documented to receive. A grant is issued
+by the holder, the serf's first act is to claim it, and the `PreToolUse` hook —
+which sees the serf's `agent_id` and the text of the claim in the same payload —
+records the pairing. Session ids are shared between hook and CLI through a
+marker the hooks write, since an agent's shell is not told which session it is
+in.
+
+Every failure mode falls back to the wider rule rather than to none: a grant
+that is never claimed, or cannot be read, leaves the serf with the ordinary
+fief boundary. A grant can only narrow — it is checked against the holder's own
+paths when issued, so nobody can grant land they do not hold.
+
+The guard needs no new rules for any of this. It resolves land from the agent's
+name, so `serf-core` gets core's boundary (or its grant, when it has one), and
+anything it does not recognise — `general-purpose`, `Explore` — holds no land
+and cannot write at all.
 
 ### Ownership is the point
 
@@ -361,6 +391,9 @@ fiefdom migrate                  Move a legacy .pi/ layout to .fiefdom/
 fiefdom memory show [--fief <id>] [--category <c>] [--full]
 fiefdom memory add --fief <id> --json '{"decisions":["..."]}'
 fiefdom memory clear --fief <id>
+
+fiefdom grant --fief <id> --paths "a.ts,b.ts" [--task "..."]
+fiefdom claim <grant-id>
 
 fiefdom log --from <fief> --to <fief> --message "..."
 fiefdom log show [--limit 50]

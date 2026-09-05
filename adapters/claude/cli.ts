@@ -45,6 +45,16 @@ import { computeCoChange } from "../../core/cochange.ts";
 import { extractWriteTargets } from "../../core/bashwrites.ts";
 import { changedPaths, loadSnapshot, saveSnapshot, snapshot } from "../../core/watch.ts";
 import {
+	type Grant,
+	bindGrant,
+	boundGrant,
+	claimedGrantId,
+	currentSession,
+	issueGrant,
+	readGrant,
+	rememberSession,
+} from "../../core/grants.ts";
+import {
 	agentName,
 	agentFile,
 	commandFiles,
@@ -762,6 +772,73 @@ function cmdLog(args: Args): void {
 }
 
 // ---------------------------------------------------------------------------
+// grants (subinfeudation)
+// ---------------------------------------------------------------------------
+
+function cmdGrant(args: Args): void {
+	const root = projectRoot(args);
+	const config = requireConfig(root);
+
+	const fiefId = flagString(args, "fief");
+	const rawPaths = flagString(args, "paths");
+	const session = flagString(args, "session") ?? currentSession(config.paths.repoRoot);
+	const fief = fiefId ? getFief(config, fiefId) : undefined;
+
+	if (!fief || !rawPaths) {
+		console.error(
+			'usage: fiefdom grant --fief <id> --paths "core/db.ts,core/sync.ts" [--task "..."]'
+		);
+		process.exit(1);
+	}
+
+	const paths = rawPaths
+		.split(",")
+		.map((p) => p.trim())
+		.filter(Boolean);
+
+	// A grant may only narrow: every path must already be the holder's.
+	const outside = paths.filter(
+		(p) => !pathMatchesFief(p, fief.paths) && !pathMatchesFief(p, config.sharedPaths)
+	);
+	if (outside.length) {
+		console.error(
+			`You cannot grant land you do not hold: ${outside.join(", ")}\n` +
+				`The ${fief.id} fief is ${fief.paths.join(", ")}.`
+		);
+		process.exit(1);
+	}
+
+	const grant = issueGrant(session, fief.id, paths, flagString(args, "task"));
+
+	console.log(`Granted ${grant.id}: ${paths.join(", ")}`);
+	console.log("");
+	console.log("Put this line in the serf's prompt, before anything else:");
+	console.log(`  Claim your grant first: \`${resolveBin(config.paths.stateDir)} claim ${grant.id}\``);
+}
+
+function cmdClaim(args: Args): void {
+	const root = projectRoot(args);
+	const config = requireConfig(root);
+	const session = flagString(args, "session") ?? currentSession(config.paths.repoRoot);
+	const grantId = args._[1];
+
+	const grant = grantId ? readGrant(session, grantId) : null;
+	if (!grant) {
+		console.error(
+			`No such grant: ${grantId ?? "(none given)"}. Ask your holder to issue one, or work within the whole fief.`
+		);
+		process.exit(1);
+	}
+
+	// The binding itself is made by the hook, which is the only place that
+	// knows which agent is running this command.
+	console.log(`Claimed ${grant.id} — your land for this task:`);
+	for (const p of grant.paths) console.log(`  ${p}`);
+	if (grant.task) console.log(`\nGranted for: ${grant.task}`);
+	console.log(`\nAnything outside those paths is refused, even inside the ${grant.fief} fief.`);
+}
+
+// ---------------------------------------------------------------------------
 // hooks
 // ---------------------------------------------------------------------------
 
@@ -883,6 +960,25 @@ function hookPreToolUse(): never {
 	const config = loadConfig(root);
 	if (!config || config.enforcement === "off") passThrough();
 
+	// Hooks know the session id; the CLI an agent runs does not. Record it so
+	// grants issued from a shell land under the key the guard reads.
+	if (payload.session_id) rememberSession(config.paths.repoRoot, payload.session_id);
+
+	// A serf claiming its grant: this is the one moment both the agent's id and
+	// the grant it was given are visible together, so the pairing is made here.
+	if (payload.tool_name === "Bash" && payload.agent_id && payload.session_id) {
+		const command = payload.tool_input?.command;
+		const grantId = typeof command === "string" ? claimedGrantId(command) : null;
+		if (grantId) {
+			const grant = readGrant(payload.session_id, grantId);
+			const claimant = fiefIdFromAgent(payload.agent_type);
+			// Only the fief the grant came from may claim it.
+			if (grant && claimant === grant.fief) {
+				bindGrant(payload.session_id, payload.agent_id, grant);
+			}
+		}
+	}
+
 	// Commands can write in ways no parser will catch, so record the state of
 	// the working tree first; the PostToolUse hook compares against it.
 	if (payload.tool_name === "Bash" && payload.tool_use_id && payload.session_id) {
@@ -936,15 +1032,33 @@ function hookPreToolUse(): never {
 
 	if (config.enforcement === "orchestrator") passThrough();
 
+	// A serf that claimed a grant holds only what it was granted.
+	const grant =
+		payload.agent_id && payload.session_id
+			? boundGrant(payload.session_id, payload.agent_id)
+			: null;
+	const held = grant && grant.fief === fief.id ? grant.paths : fief.paths;
+
 	const trespass = targets.find(
 		({ relative }) =>
-			!pathMatchesFief(relative, fief.paths) &&
+			!pathMatchesFief(relative, held) &&
 			!(config.sharedPaths.length && pathMatchesFief(relative, config.sharedPaths))
 	);
 	if (!trespass) passThrough();
 
 	const { relative, reason } = trespass;
 	const owner = findFiefForPath(relative, config);
+
+	if (grant && grant.fief === fief.id) {
+		deny(
+			`Fiefdom: ${relative} is outside your grant (${grant.paths.join(", ")}).\n` +
+				(viaShell ? `That command writes it (${reason}).\n` : "") +
+				`It may still be ${fief.id} land, but this task was carved narrower than the fief. ` +
+				`Report what else needs changing and let the holder decide — it is coordinating ` +
+				`the whole piece of work and you are seeing one part of it.`
+		);
+	}
+
 	deny(
 		`Fiefdom: ${relative} is outside the ${fief.id} fief (${fief.paths.join(", ")}).\n` +
 			(viaShell ? `That command writes it (${reason}); the shell is not a way around the boundary.\n` : "") +
@@ -1045,6 +1159,8 @@ function hookSessionStart(): never {
 	const config = loadConfig(root);
 	if (!config) process.exit(0);
 
+	if (payload.session_id) rememberSession(config.paths.repoRoot, payload.session_id);
+
 	process.stdout.write(
 		JSON.stringify({
 			hookSpecificOutput: {
@@ -1136,6 +1252,11 @@ const USAGE = `fiefdom — multi-agent workspace orchestration (Claude Code adap
   fiefdom memory add --fief <id> --json '{"decisions":["..."]}'
   fiefdom memory clear --fief <id>
 
+  fiefdom grant --fief <id> --paths "a.ts,b.ts" [--task "..."]
+      Carve an ephemeral sub-fief out of your own land for a serf.
+  fiefdom claim <grant-id>
+      Bind yourself to a grant (a serf's first act).
+
   fiefdom log --from <fief> --to <fief> --message "..."
   fiefdom log show [--limit 50]
 
@@ -1166,6 +1287,10 @@ export async function run(argv: string[]): Promise<void> {
 			return cmdMemory(args);
 		case "log":
 			return cmdLog(args);
+		case "grant":
+			return cmdGrant(args);
+		case "claim":
+			return cmdClaim(args);
 		case "migrate":
 			return cmdMigrate(args);
 		case "hook": {
