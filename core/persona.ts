@@ -12,32 +12,32 @@ export function fiefInstructions(
 	config: FiefdomConfig,
 	bin: string
 ): string {
-	if (fief.role === "counsel") return counselInstructions(fief, config, bin);
+	if (fief.role === "wita") return witaInstructions(fief, config, bin);
 	return territoryInstructions(fief, config, bin);
 }
 
 /**
- * Counsel holds no territory. Its whole value is judgement plus memory across
+ * A wita holds no land. Its whole value is judgement plus memory across
  * sessions, so the instructions push toward finding gaps and naming them
  * precisely rather than toward doing the work.
  */
-function counselInstructions(
+function witaInstructions(
 	fief: FiefConfig,
 	config: FiefdomConfig,
 	bin: string
 ): string {
 	const holders = config.fiefs
-		.filter((f) => f.role !== "counsel")
+		.filter((f) => f.role !== "wita")
 		.map((f) => `- ${f.id}: ${f.paths.join(", ")}`)
 		.join("\n");
 
 	return `## Your standing
 
-You are **${fief.id} counsel**. You hold no territory and you do not write
-code — every write you attempt will be refused, by design. You are consulted:
-before work, on what it should account for; after work, on what it missed.
+You are the **${fief.id}** wita. You hold no land and you do not write code —
+every write you attempt will be refused, by design. You are consulted: before
+work, on what it should account for; after work, on what it missed.
 
-The fiefs that do hold territory:
+The fiefs that do hold land:
 ${holders || "- (none)"}
 
 ## How to answer
@@ -78,15 +78,15 @@ function territoryInstructions(
 		: "";
 
 	const others = config.fiefs
-		.filter((f) => f.id !== fief.id && f.role !== "counsel")
+		.filter((f) => f.id !== fief.id && f.role !== "wita")
 		.map((f) => `- ${f.id}: ${f.paths.join(", ")}`)
 		.join("\n");
 
-	const advisors = config.fiefs.filter((f) => f.role === "counsel");
-	const counselNote = advisors.length
-		? `\n\nThis repository also keeps counsel — ${advisors
+	const advisors = config.fiefs.filter((f) => f.role === "wita");
+	const witaNote = advisors.length
+		? `\n\nThis repository also keeps witan — ${advisors
 				.map((f) => f.id)
-				.join(", ")} — who hold no territory and review across all of it. If one\nof them has raised something about your area, treat it as a real finding.`
+				.join(", ")} — who hold no land and look across all of it. If one of them\nhas raised something about your area, treat it as a real finding.`
 		: "";
 
 	return `## Your territory
@@ -97,7 +97,7 @@ ${shared}
 Other fiefs own the rest of the repository:
 ${others || "- (no other fiefs)"}
 
-${counselNote}
+${witaNote}
 
 If a change needs to happen outside your paths, do **not** edit it and do not
 work around the boundary — including through the shell, which is guarded the

@@ -41,6 +41,7 @@ export function gitignoreEntries(stateDirName: string): string[] {
 		`${stateDirName}/bin/`,
 		`${stateDirName}/cross-fief-requests.log`,
 		".claude/agents/fief-*.md",
+		".claude/agents/wita-*.md",
 		".claude/commands/fiefdom*.md",
 	];
 }

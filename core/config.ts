@@ -16,12 +16,15 @@ import {
 } from "./paths.ts";
 
 /**
- * A fief holds territory. Counsel holds none: it owns a concern rather than a
- * set of files — the testing philosophy, documentation debt, security posture —
- * and is consulted rather than assigned. Structurally it is a fief with no
+ * A fief holds land. A wita holds none.
+ *
+ * From Old English `wita`, a wise one — the witan were the counsellors a king
+ * consulted before deciding, holding no territory by virtue of the office. A
+ * wita here owns a concern rather than a set of files: the testing philosophy,
+ * documentation debt, security posture. Structurally it is a fief with no
  * paths, which the write guard already refuses every write.
  */
-export type Role = "fief" | "counsel";
+export type Role = "fief" | "wita";
 
 export interface FiefConfig {
 	id: string;
@@ -85,16 +88,18 @@ export function loadConfigFrom(paths: FiefdomPaths): FiefdomConfig | null {
 			console.error("Fiefdom: Invalid fief config - missing 'id'");
 			continue;
 		}
-		if (fief.role !== "counsel" && (!fief.paths || !Array.isArray(fief.paths))) {
+		const declaredWita = fief.role === "wita" || fief.role === "counsel";
+		if (!declaredWita && (!fief.paths || !Array.isArray(fief.paths))) {
 			console.error(`Fiefdom: Invalid fief '${fief.id}' - missing 'paths' array`);
 			continue;
 		}
-		const role: Role = fief.role === "counsel" ? "counsel" : "fief";
+		// "counsel" was the name before this took its Old English one.
+		const role: Role = fief.role === "wita" || fief.role === "counsel" ? "wita" : "fief";
 
 		fiefs.push({
 			id: fief.id,
 			role,
-			paths: role === "counsel" ? [] : fief.paths,
+			paths: role === "wita" ? [] : fief.paths,
 			persona: fief.persona ?? defaultPersonaPath(paths.stateDirName, fief.id),
 			memory: fief.memory ?? defaultMemoryPath(paths.stateDirName, fief.id),
 			description: typeof fief.description === "string" ? fief.description : undefined,
@@ -129,7 +134,7 @@ export function serializeConfig(config: {
 			{
 				fiefs: config.fiefs.map((f) => ({
 					id: f.id,
-					...(f.role === "counsel" ? { role: f.role } : {}),
+					...(f.role === "wita" ? { role: f.role } : {}),
 					paths: f.paths,
 					persona: f.persona,
 					memory: f.memory,
@@ -154,14 +159,14 @@ export function memoryPathOf(config: FiefdomConfig, fief: FiefConfig): string {
 	return path.join(config.paths.configRoot, fief.memory);
 }
 
-/** Fiefs that hold territory. */
+/** Fiefs that hold land. */
 export function territories(config: FiefdomConfig): FiefConfig[] {
-	return config.fiefs.filter((f) => f.role !== "counsel");
+	return config.fiefs.filter((f) => f.role !== "wita");
 }
 
-/** Counsel: consulted, never assigned a path. */
-export function counsel(config: FiefdomConfig): FiefConfig[] {
-	return config.fiefs.filter((f) => f.role === "counsel");
+/** The witan: consulted, never assigned a path. */
+export function witan(config: FiefdomConfig): FiefConfig[] {
+	return config.fiefs.filter((f) => f.role === "wita");
 }
 
 export function getFief(config: FiefdomConfig, id: string): FiefConfig | undefined {

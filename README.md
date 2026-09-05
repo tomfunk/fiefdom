@@ -96,7 +96,7 @@ and generates the Claude Code side:
 
 | Generated | Purpose |
 |---|---|
-| `.claude/agents/fief-<id>.md` | one subagent per fief, with its persona, territory and memory instructions |
+| `.claude/agents/fief-<id>.md`, `wita-<id>.md` | one subagent each, with its persona, territory and memory instructions |
 | `.claude/commands/fiefdom*.md` | `/fiefdom`, `/fiefdom-plan`, `/fiefdom-setup`, `/fiefdom-review` |
 | `.claude/settings.local.json` | `PreToolUse` guard, `PostToolUse` detector, `SessionStart` briefing |
 | `.gitignore` entries | all of the above stays local |
@@ -166,7 +166,7 @@ them to `.fiefdom/`.
 
 | Field | Meaning |
 |---|---|
-| `role` | `fief` (default) or `counsel` — see below |
+| `role` | `fief` (default) or `wita` — see below |
 | `paths` | globs the fief may write; counsel has none |
 | `persona` | system prompt; edit this, not the generated agent file |
 | `description` | used as the subagent's `description` (how Claude decides to delegate) |
@@ -175,30 +175,34 @@ them to `.fiefdom/`.
 
 After editing, run `fiefdom sync` and restart the session.
 
-### Counsel
+### The witan
 
-A fief holds territory. **Counsel** holds none: it owns a *concern* rather than
-a set of files — the testing philosophy, documentation debt, security posture —
-and is consulted rather than assigned.
+A fief holds land. A **wita** holds none — from Old English *wita*, a wise one;
+the witan were the counsellors a king consulted before deciding, holding no
+territory by virtue of the office. Here a wita owns a *concern* rather than a
+set of files: the testing philosophy, documentation debt, security posture.
 
 ```json
 {
   "id": "testing",
-  "role": "counsel",
+  "role": "wita",
   "description": "Consult when planning for what a change should cover, and after work for gaps and slow tests."
 }
 ```
 
-Counsel cannot write; the guard refuses it, and its agent definition withholds
-the file tools. What it has is judgement and memory: a testing counsel that
+A wita cannot write; the guard refuses it, and its agent definition withholds
+the file tools. What it has is judgement and memory: a testing wita that
 accumulates *"sync.ts has no coverage of the partial-failure path"* and *"the
 Plaid fixtures make that suite 4s"* across sessions is doing something no
-territory-holding fief can, because the gap it is looking for lives in the
-commits that never touched `tests/` at all.
+land-holding fief can, because the gap it is looking for lives in the commits
+that never touched `tests/` at all.
 
-Use counsel when a concern is real but has no natural home. Prefer a fief when
+Its agent is named `wita-<id>` rather than `fief-<id>`, so the briefing and the
+routing read the way they should: fiefs are assigned work, witan are consulted.
+
+Use a wita when a concern is real but has no natural home. Prefer a fief when
 the work has files: documentation has both a path and a file type, so it earns
-territory; testing philosophy does not.
+land; testing philosophy does not.
 
 ### Ownership is the point
 
@@ -223,7 +227,7 @@ are the interesting ones.
 
 `/fiefdom-plan <what you want to build>` does the fan-out before anyone writes
 code: work out which fiefs are affected, ask each what it would need and what
-it needs *from* others, consult counsel while the design is still cheap to
+it needs *from* others, consult the witan while the design is still cheap to
 change, then reconcile the contracts and hand each fief a task that already
 names the interface it can rely on.
 

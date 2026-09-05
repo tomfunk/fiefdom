@@ -20,7 +20,6 @@ import {
 	type FiefdomConfig,
 	findFiefForPath,
 	getFief,
-	counsel,
 	loadConfig,
 	memoryPathOf,
 	normalizeRepoPath,
@@ -29,6 +28,7 @@ import {
 	serializeConfig,
 	territories,
 	toRepoRelative,
+	witan,
 } from "../../core/config.ts";
 import { FiefMemory, VALID_CATEGORIES } from "../../core/memory.ts";
 import {
@@ -197,9 +197,10 @@ async function cmdSync(args: Args): Promise<void> {
 	fs.mkdirSync(commandsDir, { recursive: true });
 
 	// Agent definitions (one per fief), plus removal of ones we no longer own.
-	const wanted = new Set(config.fiefs.map((f) => `${agentName(f.id)}.md`));
+	const wanted = new Set(config.fiefs.map((f) => `${agentName(f)}.md`));
 	for (const entry of fs.readdirSync(agentsDir)) {
-		if (entry.startsWith("fief-") && entry.endsWith(".md") && !wanted.has(entry)) {
+		const ours = entry.startsWith("fief-") || entry.startsWith("wita-");
+		if (ours && entry.endsWith(".md") && !wanted.has(entry)) {
 			fs.rmSync(path.join(agentsDir, entry));
 			console.log(`  removed stale agent ${entry}`);
 		}
@@ -208,7 +209,7 @@ async function cmdSync(args: Args): Promise<void> {
 	for (const fief of config.fiefs) {
 		const memory = memoryFor(config, fief);
 		fs.writeFileSync(
-			path.join(agentsDir, `${agentName(fief.id)}.md`),
+			path.join(agentsDir, `${agentName(fief)}.md`),
 			agentFile(
 				fief,
 				config,
@@ -238,9 +239,9 @@ async function cmdSync(args: Args): Promise<void> {
 		`Synced ${config.fiefs.length} fief agents into .claude/:\n` +
 			config.fiefs
 				.map((f) =>
-					f.role === "counsel"
-						? `  ${agentName(f.id)} -> counsel (no territory)`
-						: `  ${agentName(f.id)} -> ${f.paths.join(", ")}`
+					f.role === "wita"
+						? `  ${agentName(f)} -> wita (no land)`
+						: `  ${agentName(f)} -> ${f.paths.join(", ")}`
 				)
 				.join("\n") +
 			`\n\nRestart the session (or /reload) to pick up new agents and hooks.`
@@ -335,7 +336,7 @@ function cmdStatus(args: Args): void {
 		const memory = memoryFor(config, fief);
 		return {
 			id: fief.id,
-			agent: agentName(fief.id),
+			agent: agentName(fief),
 			paths: fief.paths,
 			memories: memory.getEntryCount(),
 			files: coverage.owned.get(fief.id) ?? 0,
@@ -382,12 +383,12 @@ function cmdStatus(args: Args): void {
 				`    learnings: ${row.memories}${row.persona ? "" : "    [persona file missing]"}`
 		);
 	}
-	const advisors = counsel(config);
+	const advisors = witan(config);
 	if (advisors.length) {
-		console.log("\n  counsel — no territory, consulted rather than assigned:");
+		console.log("\n  witan — no land, consulted rather than assigned:");
 		for (const advisor of advisors) {
 			console.log(
-				`    ${advisor.id}  (agent: ${agentName(advisor.id)})` +
+				`    ${advisor.id}  (agent: ${agentName(advisor)})` +
 					`    learnings: ${memoryFor(config, advisor).getEntryCount()}`
 			);
 		}
@@ -876,7 +877,7 @@ function hookPreToolUse(): never {
 	// No fief identity: the orchestrator itself, or some other subagent.
 	if (!fiefId) {
 		const roster = config.fiefs
-			.map((f) => `  ${agentName(f.id)} -> ${f.paths.join(", ")}`)
+			.map((f) => `  ${agentName(f)} -> ${f.paths.join(", ")}`)
 			.join("\n");
 		const { relative, reason } = targets[0];
 		const owner = findFiefForPath(relative, config);
@@ -889,7 +890,7 @@ function hookPreToolUse(): never {
 			actor +
 				(viaShell ? `That command writes ${relative} (${reason}).\n` : "") +
 				(owner
-					? `${relative} belongs to the ${owner.id} fief — delegate with the Agent tool (subagent_type: "${agentName(owner.id)}"), or SendMessage if that fief is already running.\n`
+					? `${relative} belongs to the ${owner.id} fief — delegate with the Agent tool (subagent_type: "${agentName(owner)}"), or SendMessage if that fief is already running.\n`
 					: `${relative} is not owned by any fief. Ask the user whether to widen a fief's paths or add it to sharedPaths in ${config.paths.stateDirName}/fiefs.json.\n`) +
 				`Fiefs:\n${roster}`
 		);
@@ -902,9 +903,9 @@ function hookPreToolUse(): never {
 		);
 	}
 
-	if (fief.role === "counsel") {
+	if (fief.role === "wita") {
 		deny(
-			`Fiefdom: ${fief.id} is counsel — it holds no territory and does not write.\n` +
+			`Fiefdom: ${fief.id} is a wita — it holds no land and does not write.\n` +
 				`Report the finding instead: name the file, the gap and the fief that owns it, ` +
 				`and the orchestrator will route the change.`
 		);

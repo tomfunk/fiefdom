@@ -9,21 +9,24 @@
 import type { FiefConfig, FiefdomConfig } from "../../core/config.ts";
 import type { FiefMemory } from "../../core/memory.ts";
 import { fiefInstructions } from "../../core/persona.ts";
-import { counsel, territories } from "../../core/config.ts";
+import { territories, witan } from "../../core/config.ts";
 
-export const AGENT_PREFIX = "fief-";
+export const FIEF_PREFIX = "fief-";
+export const WITA_PREFIX = "wita-";
+export const AGENT_PREFIXES = [FIEF_PREFIX, WITA_PREFIX];
 
-/** Agent name Claude Code uses for a fief (`subagent_type`). */
-export function agentName(fiefId: string): string {
-	return `${AGENT_PREFIX}${fiefId}`;
+/** Agent name Claude Code uses (`subagent_type`). */
+export function agentName(fief: { id: string; role?: string }): string {
+	return `${fief.role === "wita" ? WITA_PREFIX : FIEF_PREFIX}${fief.id}`;
 }
 
-/** Inverse of `agentName`; returns null for non-fief agents. */
+/** Inverse of `agentName`; returns null for agents that are not fiefdom's. */
 export function fiefIdFromAgent(agentType: string | undefined | null): string | null {
 	if (!agentType) return null;
 	// Plugin-scoped names arrive as "plugin:agent"; take the last segment.
 	const bare = agentType.split(":").pop()!;
-	return bare.startsWith(AGENT_PREFIX) ? bare.slice(AGENT_PREFIX.length) : null;
+	const prefix = AGENT_PREFIXES.find((p) => bare.startsWith(p));
+	return prefix ? bare.slice(prefix.length) : null;
 }
 
 /**
@@ -36,21 +39,21 @@ export function agentFile(
 	memorySnapshot: string,
 	bin: string
 ): string {
-	const isCounsel = fief.role === "counsel";
+	const isWita = fief.role === "wita";
 
 	const description =
 		fief.description?.trim() ||
-		(isCounsel
-			? `${fief.id} counsel. Holds no files; consult for review and gaps in ${fief.id}.`
+		(isWita
+			? `${fief.id} wita. Holds no files; consult for review and gaps in ${fief.id}.`
 			: `${fief.id} specialist. Owns ${fief.paths.join(", ")}. Use for any change under those paths.`);
 
 	const frontmatter = [
 		"---",
-		`name: ${agentName(fief.id)}`,
+		`name: ${agentName(fief)}`,
 		`description: ${JSON.stringify(description)}`,
 		"model: inherit",
-		// Neither kind delegates further; counsel additionally never writes.
-		isCounsel
+		// Neither kind delegates further; a wita additionally never writes.
+		isWita
 			? "disallowedTools: Agent, Write, Edit, MultiEdit, NotebookEdit"
 			: "disallowedTools: Agent",
 		"---",
@@ -75,16 +78,16 @@ ${memorySnapshot}
  */
 export function orchestratorContext(config: FiefdomConfig, bin: string): string {
 	const table = territories(config)
-		.map((f) => `- **${f.id}** (agent \`${agentName(f.id)}\`) owns ${f.paths.join(", ")}`)
+		.map((f) => `- **${f.id}** (agent \`${agentName(f)}\`) holds ${f.paths.join(", ")}`)
 		.join("\n");
 
-	const advisors = counsel(config);
-	const counselTable = advisors.length
-		? `\n\nCounsel — no territory, consulted rather than assigned:\n` +
+	const advisors = witan(config);
+	const witaTable = advisors.length
+		? `\n\nThe witan — no land, consulted rather than assigned:\n` +
 			advisors
 				.map(
 					(f) =>
-						`- **${f.id}** (agent \`${agentName(f.id)}\`): ${f.description ?? `${f.id} across the whole repository`}`
+						`- **${f.id}** (agent \`${agentName(f)}\`): ${f.description ?? `${f.id} across the whole repository`}`
 				)
 				.join("\n")
 		: "";
@@ -101,17 +104,17 @@ export function orchestratorContext(config: FiefdomConfig, bin: string): string 
 This repository is divided into fiefs. You are the **orchestrator**: you read,
 plan and route, but you do not edit files. ${enforcement}
 
-${table}${counselTable}
+${table}${witaTable}
 
 ## How to route work
 
-- Delegate with the Agent tool using \`subagent_type: "${agentName(config.fiefs[0].id)}"\` (etc.).
+- Delegate with the Agent tool using \`subagent_type: "${agentName(territories(config)[0] ?? config.fiefs[0])}"\` (etc.).
   Continue an existing fief with SendMessage so it keeps its context instead of
   spawning a second one for the same territory.
 - For planning, ask each affected fief what it would need *before* assigning
   work, then reconcile the contracts yourself and hand each fief a task that
   already names the agreed interface. \`/fiefdom-plan\` does this fan-out.
-- Consult counsel while planning, not only at the end: they hold what previous
+- Consult the witan while planning, not only at the end: they hold what earlier
   sessions learned about their concern, and a gap named before the work is
   cheaper than one found after it.
 - Cross-fief requests are worth recording: \`${bin} log --from <fief> --to <fief> --message "..."\`.
@@ -142,7 +145,8 @@ Run \`${bin} status\` and report:
 
 - each fief, the paths it owns, and how many learnings it has accumulated
 - any repository directories no fief owns
-- the agent name to use for each fief (\`fief-<id>\`) and a one-line reminder
+- the agent name to use for each (\`fief-<id>\`, or \`wita-<id>\` for the witan)
+  and a one-line reminder
   that routing happens through the Agent tool / SendMessage, not by editing
   files yourself
 
@@ -199,7 +203,7 @@ through.
    planning query: they should answer with what they would change, what they
    need from others (exact signatures, routes, payload shapes) and what they
    are unsure about — and change nothing.
-3. Consult counsel now rather than later. They hold what earlier sessions
+3. Consult the witan now rather than later. They hold what earlier sessions
    learned about their concern, and a gap named before the work is far cheaper
    than one found after it.
 4. Reconcile the answers yourself. Where two fiefs disagree about an interface,
