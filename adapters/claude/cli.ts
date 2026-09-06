@@ -785,6 +785,46 @@ function cmdLog(args: Args): void {
 }
 
 // ---------------------------------------------------------------------------
+// status line
+// ---------------------------------------------------------------------------
+
+/**
+ * A one-line summary for the terminal's status line, so it is obvious at a
+ * glance whether the fiefs are being enforced in this repo.
+ *
+ * Claude Code replaces the whole line with whatever this prints, so it carries
+ * the directory too rather than only the crown.
+ */
+function cmdStatusline(): void {
+	let payload: any = {};
+	try {
+		payload = JSON.parse(readStdin() || "{}");
+	} catch {
+		// Fall back to the working directory below.
+	}
+
+	const cwd =
+		payload?.workspace?.current_dir ?? payload?.cwd ?? process.cwd();
+	const home = process.env.HOME ?? "";
+	const shownDir = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
+
+	const config = loadConfig(findRepoRoot(cwd));
+	if (!config) {
+		console.log(shownDir);
+		return;
+	}
+
+	const held = territories(config).length;
+	const scattered = baronies(config).length;
+
+	const parts = [`${held} ${held === 1 ? "fief" : "fiefs"}`];
+	if (scattered) parts.push(`${scattered} ${scattered === 1 ? "barony" : "baronies"}`);
+	if (config.enforcement !== "strict") parts.push(config.enforcement);
+
+	console.log(`${shownDir}  ♔ ${parts.join(" · ")}`);
+}
+
+// ---------------------------------------------------------------------------
 // plugin packaging
 // ---------------------------------------------------------------------------
 
@@ -1397,6 +1437,9 @@ const USAGE = `fiefdom — multi-agent workspace orchestration (Claude Code adap
   fiefdom log --from <fief> --to <fief> --message "..."
   fiefdom log show [--limit 50]
 
+  fiefdom statusline           A crown in the status line when fiefs are
+                               enforced here (see the README to wire it up)
+
   fiefdom hook pre-tool-use | post-tool-use | session-start   (invoked by
                                                 Claude Code)
 
@@ -1430,6 +1473,8 @@ export async function run(argv: string[]): Promise<void> {
 			return cmdClaim(args);
 		case "build-plugin":
 			return cmdBuildPlugin(args);
+		case "statusline":
+			return cmdStatusline();
 		case "migrate":
 			return args.flags.plugin === true ? cmdMigrateToPlugin(args) : cmdMigrate(args);
 		case "hook": {

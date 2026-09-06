@@ -115,6 +115,29 @@ ln -s ~/projects/fiefdom ~/.pi/agent/extensions/fiefdom
 `package.json` points Pi at `adapters/pi/index.ts`. Nothing else is needed, and
 the Claude Code half is never loaded.
 
+### A crown in the status line
+
+So it is obvious at a glance whether a repo's boundaries are being enforced,
+add this to `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/skills/fiefdom/bin/fiefdom statusline"
+  }
+}
+```
+
+```
+~/projects/fungible  ♔ 5 fiefs · 1 barony
+~/projects/something-else
+```
+
+The crown appears only where fiefdom is configured; everywhere else you get the
+plain directory. A non-strict `enforcement` setting is shown too, since "the
+guard is loaded but not blocking" is worth knowing.
+
 ### Check it worked
 
 ```bash
