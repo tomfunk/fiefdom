@@ -1059,7 +1059,7 @@ function hookPreToolUse(): never {
 
 		const actor = payload.agent_type
 			? `Fiefdom: "${payload.agent_type}" holds no land here, and only holders write in this repo.\n`
-			: `Fiefdom: the orchestrator does not edit files.\n`;
+			: `Fiefdom: the liege does not work the land.\n`;
 
 		deny(
 			actor +
