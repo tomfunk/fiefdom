@@ -201,7 +201,12 @@ async function cmdInit(args: Args): Promise<void> {
 async function cmdSync(args: Args): Promise<void> {
 	const root = projectRoot(args);
 	const config = requireConfig(root);
-	const bin = resolveBin(config.paths.stateDir);
+
+	// When fiefdom is installed as a plugin it already supplies the hooks and
+	// the slash commands, and puts itself on the Bash tool's PATH — so the
+	// generated files can say `fiefdom` and no shim is needed.
+	const asPlugin = Boolean(process.env.CLAUDE_PLUGIN_ROOT) || args.flags.plugin === true;
+	const bin = asPlugin ? "fiefdom" : resolveBin(config.paths.stateDir);
 
 	const agentsDir = path.join(root, ".claude", "agents");
 	const commandsDir = path.join(root, ".claude", "commands");
@@ -247,11 +252,8 @@ async function cmdSync(args: Args): Promise<void> {
 		}
 	}
 
-	// When fiefdom is installed as a plugin it already supplies the hooks and
-	// the slash commands; only the agents are repo-specific and still need
-	// generating. Writing them again would mean two copies to keep in step.
-	const asPlugin = Boolean(process.env.CLAUDE_PLUGIN_ROOT) || args.flags.plugin === true;
-
+	// Only the agents are repo-specific; writing the rest again would mean two
+	// copies of the same thing to keep in step.
 	if (!asPlugin) {
 		for (const [name, content] of commandFiles(bin, config.paths.stateDirName)) {
 			fs.writeFileSync(path.join(commandsDir, name), content, "utf-8");
@@ -1243,6 +1245,82 @@ function readHookPayload(): HookPayload {
 // migrate
 // ---------------------------------------------------------------------------
 
+/**
+ * Move a repo from the standalone install to the plugin: take out what the
+ * plugin now supplies, and leave only what is genuinely per-repo.
+ */
+async function cmdMigrateToPlugin(args: Args): Promise<void> {
+	const root = projectRoot(args);
+	const config = requireConfig(root);
+	const removed: string[] = [];
+
+	// The generated slash commands.
+	const commandsDir = path.join(root, ".claude", "commands");
+	try {
+		for (const entry of fs.readdirSync(commandsDir)) {
+			if (/^fiefdom.*\.md$/.test(entry)) {
+				fs.rmSync(path.join(commandsDir, entry));
+				removed.push(`.claude/commands/${entry}`);
+			}
+		}
+		if (fs.readdirSync(commandsDir).length === 0) fs.rmdirSync(commandsDir);
+	} catch {
+		// No commands directory: nothing to take out.
+	}
+
+	// Our hook entries, leaving anyone else's alone.
+	const settingsPath = path.join(root, ".claude", "settings.local.json");
+	if (fs.existsSync(settingsPath)) {
+		try {
+			const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+			let touched = false;
+
+			for (const [event, entries] of Object.entries(settings.hooks ?? {})) {
+				if (!Array.isArray(entries)) continue;
+				const kept = entries.filter((entry) => !isFiefdomHook(entry));
+				if (kept.length === entries.length) continue;
+
+				touched = true;
+				removed.push(`${event} hook`);
+				if (kept.length) settings.hooks[event] = kept;
+				else delete settings.hooks[event];
+			}
+
+			if (settings.hooks && Object.keys(settings.hooks).length === 0) {
+				delete settings.hooks;
+			}
+			if (touched) {
+				fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+			}
+		} catch (err) {
+			console.error(`Left ${settingsPath} alone: ${err}`);
+		}
+	}
+
+	// The shim exists only to give a standalone install a short path.
+	const shimDir = path.join(config.paths.stateDir, "bin");
+	if (fs.existsSync(shimDir)) {
+		fs.rmSync(shimDir, { recursive: true, force: true });
+		removed.push(`${config.paths.stateDirName}/bin/`);
+	}
+
+	console.log(
+		removed.length
+			? `Removed what the plugin now supplies:\n${removed.map((r) => `  ${r}`).join("\n")}`
+			: "Nothing to remove — this repo was not on the standalone install."
+	);
+	console.log("");
+
+	await cmdSync({ ...args, flags: { ...args.flags, plugin: true } });
+
+	console.log("");
+	console.log(
+		"Load the plugin for this to take effect:\n" +
+			"  claude --plugin-dir <your fiefdom checkout>\n" +
+			"Without it, this repo now has no fiefdom hooks and no boundaries are enforced."
+	);
+}
+
 function cmdMigrate(args: Args): void {
 	const root = projectRoot(args);
 	const current = resolvePaths(root);
@@ -1304,6 +1382,8 @@ const USAGE = `fiefdom — multi-agent workspace orchestration (Claude Code adap
   fiefdom analyze [--json]     Propose a division without writing anything
   fiefdom owner <path>         Which fief owns a path
   fiefdom migrate              Move a legacy .pi/ layout to ${FIEFDOM_DIR}/
+  fiefdom migrate --plugin     Move off the standalone install: drop the hooks,
+                               commands and shim the plugin now supplies
 
   fiefdom memory show [--fief <id>] [--category <c>] [--full]
   fiefdom memory add --fief <id> --json '{"decisions":["..."]}'
@@ -1351,7 +1431,7 @@ export async function run(argv: string[]): Promise<void> {
 		case "build-plugin":
 			return cmdBuildPlugin(args);
 		case "migrate":
-			return cmdMigrate(args);
+			return args.flags.plugin === true ? cmdMigrateToPlugin(args) : cmdMigrate(args);
 		case "hook": {
 			const event = args._[1];
 			if (event === "pre-tool-use") hookPreToolUse();
