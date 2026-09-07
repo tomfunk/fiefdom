@@ -386,6 +386,11 @@ actor comes from the payload's `agent_type`: no fief identity means the
 liege (or an unrelated subagent), and it does not write at all. In Pi
 each worker applies the same rule in-process.
 
+The one thing the liege *may* write is fiefdom's own control plane —
+`.fiefdom/fiefs.json` and the personas under `.fiefdom/fiefs/<id>/`. That is
+not land, maintaining it is the liege's job, and `/fiefdom-setup` and
+`/fiefdom-review` depend on it. An unrelated subagent gets no such exemption.
+
 **2. Shell commands — read, then decided.** An agent working through Bash edits
 with `sed -i` and heredocs rather than `Write`, so the guard extracts the paths
 a command clearly writes — redirections, `tee`, in-place `sed`/`perl`, `cp`/`mv`

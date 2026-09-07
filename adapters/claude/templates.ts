@@ -166,6 +166,9 @@ ${table}${baronTable}
   the user rather than routing around: an unownable file is a hint that the code
   sits on a blurry boundary. Widening a fief or adding to \`sharedPaths\` in
   ${config.paths.stateDirName}/fiefs.json is the fallback, not the first answer.
+- Fiefdom's own files are yours to maintain: edit ${config.paths.stateDirName}/fiefs.json
+  and the personas under ${config.paths.stateDirName}/fiefs/<id>/ directly, then run
+  \`${bin} sync\`. The guard keeps you off the code, not off the config.
 - A holder that was cut off mid-task (rate limits, cancellation) leaves its
   edits on disk and takes its context with it. Spawn it again and have it run
   \`${bin} resume --fief <id>\` first: that prints what the last attempt

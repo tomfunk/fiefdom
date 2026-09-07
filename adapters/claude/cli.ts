@@ -1207,12 +1207,26 @@ function hookPreToolUse(): never {
 	const fiefId = fiefIdFromAgent(payload.agent_type);
 	const viaShell = payload.tool_name === "Bash";
 
+	// The liege holds no land, but fiefdom's own state — the config and personas
+	// under the state dir, and the `.claude/` files sync writes — is not land.
+	// Maintaining it is the liege's job, and exactly what `/fiefdom-setup` and
+	// `/fiefdom-review` tell it to do. PostToolUse already exempts these paths
+	// (`isFiefdomState`); match it here so the documented flow works in a repo
+	// that is actually enforced. A named subagent that is not a fief holder gets
+	// no such exemption.
+	if (!payload.agent_type && targets.every(({ relative }) => isFiefdomState(relative, config))) {
+		passThrough();
+	}
+
 	// No fief identity: the orchestrator itself, or some other subagent.
 	if (!fiefId) {
 		const roster = config.fiefs
 			.map((f) => `  ${agentName(f)} -> ${f.paths.join(", ")}`)
 			.join("\n");
-		const { relative, reason } = targets[0];
+		// Point at the write that is actually the problem: a mixed command may
+		// touch fiefdom's own state (allowed) alongside real code (not).
+		const { relative, reason } =
+			targets.find((t) => !isFiefdomState(t.relative, config)) ?? targets[0];
 		const owner = findFiefForPath(relative, config);
 
 		const actor = payload.agent_type
