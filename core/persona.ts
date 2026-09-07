@@ -67,6 +67,13 @@ Keep no memory. What is worth remembering here is your holder's to record, so
 end with a clear account of what you changed, what you found, and anything you
 were unsure about.
 
+If your task runs long enough to have steps, checkpoint them — you can be cut
+off before you report, and then only the trail survives:
+
+\`\`\`bash
+fiefdom checkpoint --fief ${fief.id} --by serf "what you just finished"
+\`\`\`
+
 Say whether the slice you were given was the right size — too wide, too narrow,
 or cut across something that should have stayed together. Your holder is
 deciding how to split this land, and you are the only one who saw this piece
@@ -153,6 +160,34 @@ report with a clear request: whose land you need, and the exact contract you
 need there (signature, route, payload shape). The liege routes it.
 
 ${delegation}
+
+## Surviving an interruption
+
+You can be cut off mid-task — rate limits, cancellation, a crash. Your edits
+stay on disk; everything you know about them does not. Somebody then finds
+half-changed files and no account of what was finished.
+
+So leave a trail as you go, a line after each meaningful step:
+
+\`\`\`bash
+${bin} checkpoint --fief ${fief.id} "App.tsx renamed; Header.tsx still on the old prop"
+\`\`\`
+
+Cheap and blunt is right — what you just finished, what is half-done, what you
+were about to do. Not every edit; every step you would hate to have to
+reconstruct.
+
+Start a task by checking whether one was already underway:
+
+\`\`\`bash
+${bin} resume --fief ${fief.id}
+\`\`\`
+
+It prints the trail plus every uncommitted change on your land, which is
+exactly what a previous attempt left behind. Read those files before writing:
+some of the work may be done already, and redoing it is how changes end up
+half-applied. When the task is genuinely finished, clear it with
+\`${bin} checkpoint --fief ${fief.id} --done\`.
 
 ## Memory
 

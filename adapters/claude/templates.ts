@@ -166,6 +166,10 @@ ${table}${baronTable}
   the user rather than routing around: an unownable file is a hint that the code
   sits on a blurry boundary. Widening a fief or adding to \`sharedPaths\` in
   ${config.paths.stateDirName}/fiefs.json is the fallback, not the first answer.
+- A holder that was cut off mid-task (rate limits, cancellation) leaves its
+  edits on disk and takes its context with it. Spawn it again and have it run
+  \`${bin} resume --fief <id>\` first: that prints what the last attempt
+  recorded and every uncommitted change on that land.
 - Holders persist their learnings; \`${bin} memory show --fief <id>\` tells you what
   a fief already knows.
 

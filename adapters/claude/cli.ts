@@ -12,6 +12,7 @@
  * reads, so one repo works with either agent.
  */
 
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -44,6 +45,11 @@ import { computeCoverage, groupByTopLevel } from "../../core/coverage.ts";
 import { computeCoChange } from "../../core/cochange.ts";
 import { extractWriteTargets } from "../../core/bashwrites.ts";
 import { changedPaths, loadSnapshot, saveSnapshot, snapshot } from "../../core/watch.ts";
+import {
+	appendJournal,
+	clearJournal,
+	readJournal,
+} from "../../core/journal.ts";
 import {
 	type Grant,
 	bindGrant,
@@ -785,6 +791,116 @@ function cmdLog(args: Args): void {
 }
 
 // ---------------------------------------------------------------------------
+// checkpoint / resume
+// ---------------------------------------------------------------------------
+
+function cmdCheckpoint(args: Args): void {
+	const root = projectRoot(args);
+	const config = requireConfig(root);
+	const fiefId = flagString(args, "fief");
+	const fief = fiefId ? getFief(config, fiefId) : undefined;
+
+	if (!fief) {
+		console.error(
+			`usage: fiefdom checkpoint --fief <${config.fiefs.map((f) => f.id).join("|")}> "what you just finished"\n` +
+				`       fiefdom checkpoint --fief <id> --done`
+		);
+		process.exit(1);
+	}
+
+	if (args.flags.done) {
+		clearJournal(config, fief);
+		console.log(`Journal cleared for ${fief.id}; the task is done.`);
+		return;
+	}
+
+	const note = args._.slice(1).join(" ").trim() || flagString(args, "note");
+	if (!note) {
+		console.error('Say what you finished: fiefdom checkpoint --fief <id> "..."');
+		process.exit(1);
+	}
+
+	appendJournal(config, fief, note, flagString(args, "by"));
+	console.log(`Noted for ${fief.id}: ${note}`);
+}
+
+/**
+ * What the last attempt on this land left behind.
+ *
+ * Because fiefs are path-disjoint, uncommitted changes can be attributed to a
+ * holder exactly — no guessing which agent touched what.
+ */
+function cmdResume(args: Args): void {
+	const root = projectRoot(args);
+	const config = requireConfig(root);
+	const fiefId = flagString(args, "fief");
+	const fief = fiefId ? getFief(config, fiefId) : undefined;
+
+	if (!fief) {
+		console.error(`usage: fiefdom resume --fief <${config.fiefs.map((f) => f.id).join("|")}>`);
+		process.exit(1);
+	}
+
+	const entries = readJournal(config, fief);
+	console.log(`# Picking up ${fief.id}`);
+	console.log("");
+
+	if (entries.length) {
+		console.log("What the last attempt recorded:");
+		for (const entry of entries) {
+			const when = entry.at.slice(11, 16);
+			console.log(`  ${when}  ${entry.note}${entry.by ? `  (${entry.by})` : ""}`);
+		}
+	} else {
+		console.log("Nothing was checkpointed — either the task is fresh, or the");
+		console.log("last attempt died before recording anything.");
+	}
+
+	const dirty = uncommittedOnLand(config, fief);
+	console.log("");
+	if (dirty.length) {
+		console.log(`Uncommitted changes on ${fief.id} land — the work already done:`);
+		for (const { code, file } of dirty.slice(0, 40)) {
+			console.log(`  ${code}  ${file}`);
+		}
+		if (dirty.length > 40) console.log(`  ... and ${dirty.length - 40} more`);
+		console.log("");
+		console.log("Read those files before writing anything: some of this may already");
+		console.log("be finished, and redoing it is how half-applied changes happen.");
+	} else {
+		console.log(`No uncommitted changes on ${fief.id} land.`);
+	}
+}
+
+/** Working-tree changes that fall inside a fief's paths. */
+function uncommittedOnLand(
+	config: FiefdomConfig,
+	fief: FiefConfig
+): Array<{ code: string; file: string }> {
+	let porcelain = "";
+	try {
+		porcelain = execFileSync(
+			"git",
+			["status", "--porcelain", "-z", "--untracked-files=all"],
+			{ cwd: config.paths.repoRoot, encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 }
+		);
+	} catch {
+		return [];
+	}
+
+	const out: Array<{ code: string; file: string }> = [];
+	const records = porcelain.split("\0").filter(Boolean);
+	for (let i = 0; i < records.length; i++) {
+		const code = records[i].slice(0, 2);
+		const file = records[i].slice(3);
+		if (code[0] === "R" || code[1] === "R") i++;
+		if (!file) continue;
+		if (pathMatchesFief(file, fief.paths)) out.push({ code: code.trim() || "??", file });
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
 // status line
 // ---------------------------------------------------------------------------
 
@@ -1437,6 +1553,11 @@ const USAGE = `fiefdom — multi-agent workspace orchestration (Claude Code adap
   fiefdom log --from <fief> --to <fief> --message "..."
   fiefdom log show [--limit 50]
 
+  fiefdom checkpoint --fief <id> "what you just finished"
+  fiefdom checkpoint --fief <id> --done
+  fiefdom resume --fief <id>   What the last attempt left behind, when an
+                               agent was interrupted mid-task
+
   fiefdom statusline           A crown in the status line when fiefs are
                                enforced here (see the README to wire it up)
 
@@ -1475,6 +1596,10 @@ export async function run(argv: string[]): Promise<void> {
 			return cmdBuildPlugin(args);
 		case "statusline":
 			return cmdStatusline();
+		case "checkpoint":
+			return cmdCheckpoint(args);
+		case "resume":
+			return cmdResume(args);
 		case "migrate":
 			return args.flags.plugin === true ? cmdMigrateToPlugin(args) : cmdMigrate(args);
 		case "hook": {
