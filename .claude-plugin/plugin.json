@@ -1,7 +1,7 @@
 {
   "name": "fiefdom",
   "description": "Divide a repository into fiefs, each held by an agent that may write only there, and keep the main session as a liege that grants work rather than doing it.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": {
     "name": "tomfunk"
   },
