@@ -1,15 +1,13 @@
-# Fiefdom
-
 ```
           [::]
-          |
-     |‾|_|‾|_|‾|
-     |         |
-     |  |‾‾‾|  |
-     |  | + |  |
-     |__|___|__|
+          |               ______ _       __    _
+     |‾|_|‾|_|‾|         |  ____(_)     / _|  | |
+     |         |         | |__   _  ___| |_ __| | ___  _ __ ___
+     |  |‾‾‾|  |         |  __| | |/ _ \  _/ _` |/ _ \| '_ ` _ \
+     |  | + |  |         | |    | |  __/ || (_| | (_) | | | | | |
+     |__|___|__|         |_|    |_|\___|_| \__,_|\___/|_| |_| |_|
 ```
-
+                                     
 Multi-agent workspace orchestration for **Claude Code** and **Pi**.
 
 Fiefdom splits a repository into **fiefs** — areas of land. Each is held by a
