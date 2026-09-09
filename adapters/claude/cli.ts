@@ -31,6 +31,7 @@ import {
 	territories,
 	toRepoRelative,
 } from "../../core/config.ts";
+import { decideFiefWrite } from "../../core/enforce.ts";
 import { FiefMemory, VALID_CATEGORIES } from "../../core/memory.ts";
 import {
 	FIEFDOM_DIR,
@@ -1250,50 +1251,17 @@ function hookPreToolUse(): never {
 		);
 	}
 
-	if (fief.paths.length === 0) {
-		deny(
-			`Fiefdom: ${fief.id} holds no land, so it advises rather than writes.\n` +
-				`Report the finding instead: name the file, the gap and the fief that owns it, ` +
-				`and the orchestrator will route the change.`
-		);
-	}
-
-	if (config.enforcement === "orchestrator") passThrough();
-
 	// A serf that claimed a grant holds only what it was granted.
 	const grant =
 		payload.agent_id && payload.session_id
 			? boundGrant(payload.session_id, payload.agent_id)
 			: null;
-	const held = grant && grant.fief === fief.id ? grant.paths : fief.paths;
 
-	const trespass = targets.find(
-		({ relative }) =>
-			!pathMatchesFief(relative, held) &&
-			!(config.sharedPaths.length && pathMatchesFief(relative, config.sharedPaths))
-	);
-	if (!trespass) passThrough();
-
-	const { relative, reason } = trespass;
-	const owner = findFiefForPath(relative, config);
-
-	if (grant && grant.fief === fief.id) {
-		deny(
-			`Fiefdom: ${relative} is outside your grant (${grant.paths.join(", ")}).\n` +
-				(viaShell ? `That command writes it (${reason}).\n` : "") +
-				`It may still be ${fief.id} land, but this task was carved narrower than the fief. ` +
-				`Report what else needs changing and let the holder decide — it is coordinating ` +
-				`the whole piece of work and you are seeing one part of it.`
-		);
-	}
-
-	deny(
-		`Fiefdom: ${relative} is outside the ${fief.id} fief (${fief.paths.join(", ")}).\n` +
-			(viaShell ? `That command writes it (${reason}); the shell is not a way around the boundary.\n` : "") +
-			(owner
-				? `It belongs to the ${owner.id} fief. Do not edit it. Finish your own part, then state exactly what you need from ${owner.id} — the orchestrator will route it.`
-				: `No fief owns it. Do not edit it. Report what you need and let the orchestrator decide where it belongs.`)
-	);
+	// The write judgement itself is shared with the Pi adapter (core/enforce.ts),
+	// so both harnesses enforce the boundary the same way.
+	const decision = decideFiefWrite(config, fief, targets, { grant, viaShell });
+	if (decision.allow) passThrough();
+	deny(decision.reason);
 }
 
 /**
@@ -1379,6 +1347,9 @@ function isFiefdomState(file: string, config: FiefdomConfig): boolean {
 }
 
 function hookSessionStart(): never {
+	// Dormant when disabled: no briefing, matching the PreToolUse pass-through, so
+	// `FIEFDOM_DISABLE=1 claude` is an ordinary session with no fiefdom framing.
+	if (process.env.FIEFDOM_DISABLE) process.exit(0);
 	const payload = readHookPayload();
 	const root = process.env.CLAUDE_PROJECT_DIR
 		? path.resolve(process.env.CLAUDE_PROJECT_DIR)
