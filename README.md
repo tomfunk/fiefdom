@@ -1,5 +1,15 @@
 # Fiefdom
 
+```
+          [::]
+          |
+     |‾|_|‾|_|‾|
+     |         |
+     |  |‾‾‾|  |
+     |  | + |  |
+     |__|___|__|
+```
+
 Multi-agent workspace orchestration for **Claude Code** and **Pi**.
 
 Fiefdom splits a repository into **fiefs** — areas of land. Each is held by a
@@ -114,6 +124,31 @@ ln -s ~/projects/fiefdom ~/.pi/agent/extensions/fiefdom
 
 `package.json` points Pi at `adapters/pi/index.ts`. Nothing else is needed, and
 the Claude Code half is never loaded.
+
+### Opt-in per launch (`claude -f`)
+
+Fiefdom enforces whenever it is installed and the repo has a `fiefs.json`. To
+make it opt-in instead — dormant unless you ask for it — set `FIEFDOM_DISABLE=1`
+by default and clear it when you want boundaries. A shell wrapper turns that into
+a `-f` flag:
+
+```zsh
+claude() {
+  local -a args; local fief=
+  for a in "$@"; do
+    [[ $a == -f ]] && fief=1 || args+=("$a")
+  done
+  if [[ -n $fief ]]; then
+    command claude "${args[@]}"                    # fiefdom active
+  else
+    FIEFDOM_DISABLE=1 command claude "${args[@]}"  # fiefdom dormant
+  fi
+}
+```
+
+`FIEFDOM_DISABLE` suppresses the write guard *and* the session-start briefing, so
+a dormant session is an ordinary one with no fiefdom framing. The env var is
+inherited by the hook subprocesses, so nothing else is needed.
 
 ### A crown in the status line
 
